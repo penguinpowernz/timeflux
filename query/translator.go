@@ -57,6 +57,16 @@ func (t *Translator) translateSelect(stmt *influxql.SelectStatement) (string, er
 
 	// SELECT clause
 	sql.WriteString("SELECT ")
+
+	// Add time_bucket as first column if grouping by time
+	if t.hasTimeBucket(stmt.Dimensions) {
+		interval := t.getTimeBucketInterval(stmt.Dimensions)
+		sql.WriteString(fmt.Sprintf("time_bucket(%s, time) AS time", interval))
+		if len(stmt.Fields) > 0 {
+			sql.WriteString(", ")
+		}
+	}
+
 	if err := t.translateFields(stmt, &sql); err != nil {
 		return "", err
 	}
@@ -103,8 +113,8 @@ func (t *Translator) translateSelect(stmt *influxql.SelectStatement) (string, er
 				sql.WriteString(" DESC")
 			}
 		}
-	} else if len(stmt.Dimensions) > 0 {
-		// Default: order by time if we have GROUP BY
+	} else if t.hasTimeBucket(stmt.Dimensions) {
+		// Default: order by time only if we have GROUP BY time()
 		sql.WriteString(" ORDER BY time")
 	}
 
@@ -177,6 +187,22 @@ func (t *Translator) translateExpr(expr influxql.Expr) string {
 
 	case *influxql.TimeLiteral:
 		return quoteString(e.Val.Format(time.RFC3339Nano))
+
+	case *influxql.DurationLiteral:
+		// Convert InfluxDB duration to PostgreSQL interval
+		// e.Val is a time.Duration, convert directly to seconds/minutes/hours
+		d := e.Val
+		if d%(24*time.Hour) == 0 {
+			return fmt.Sprintf("INTERVAL '%d days'", d/(24*time.Hour))
+		} else if d%time.Hour == 0 {
+			return fmt.Sprintf("INTERVAL '%d hours'", d/time.Hour)
+		} else if d%time.Minute == 0 {
+			return fmt.Sprintf("INTERVAL '%d minutes'", d/time.Minute)
+		} else if d%time.Second == 0 {
+			return fmt.Sprintf("INTERVAL '%d seconds'", d/time.Second)
+		} else {
+			return fmt.Sprintf("INTERVAL '%d milliseconds'", d/time.Millisecond)
+		}
 
 	case *influxql.Wildcard:
 		return "*"
@@ -307,10 +333,9 @@ func (t *Translator) translateGroupBy(dimensions influxql.Dimensions, sql *strin
 			// Handle time() function for time bucketing
 			if strings.ToLower(d.Name) == "time" {
 				if len(d.Args) > 0 {
-					duration := t.translateExpr(d.Args[0])
-					// Convert InfluxDB duration to PostgreSQL interval
-					interval := t.durationToInterval(duration)
-					timeBucket := fmt.Sprintf("time_bucket(%s, time)", quoteString(interval))
+					// translateExpr already returns INTERVAL 'X units' for DurationLiteral
+					interval := t.translateExpr(d.Args[0])
+					timeBucket := fmt.Sprintf("time_bucket(%s, time)", interval)
 					sql.WriteString(timeBucket)
 				}
 			} else {
@@ -332,28 +357,63 @@ func (t *Translator) durationToInterval(duration string) string {
 	// Remove quotes if present
 	duration = strings.Trim(duration, "'\"")
 
+	// DurationLiteral.String() returns formats like "5m0s", "2h0m0s", etc.
+	// We need to parse this and convert to PostgreSQL interval format
+
+	// If it already contains spaces (like "5m0 second"), it's already partially formatted
+	// Just clean it up by removing the trailing unit and standardizing
+	if strings.Contains(duration, " ") {
+		// Strip trailing "second", "seconds", etc and rebuild
+		duration = strings.TrimSuffix(strings.TrimSpace(duration), "s")
+		duration = strings.TrimSuffix(strings.TrimSpace(duration), "second")
+	}
+
+	// Simple approach: handle common single-unit formats first
 	// Common InfluxDB duration formats: 1s, 5m, 1h, 1d, 1w
-	if len(duration) < 2 {
-		return duration
+	if len(duration) >= 2 && !strings.Contains(duration, " ") {
+		value := duration[:len(duration)-1]
+		unit := duration[len(duration)-1:]
+
+		switch unit {
+		case "s":
+			return value + " seconds"
+		case "m":
+			return value + " minutes"
+		case "h":
+			return value + " hours"
+		case "d":
+			return value + " days"
+		case "w":
+			return value + " weeks"
+		default:
+			// If it doesn't match simple pattern, return as-is
+			return duration
+		}
 	}
 
-	value := duration[:len(duration)-1]
-	unit := duration[len(duration)-1:]
+	return duration
+}
 
-	switch unit {
-	case "s":
-		return value + " seconds"
-	case "m":
-		return value + " minutes"
-	case "h":
-		return value + " hours"
-	case "d":
-		return value + " days"
-	case "w":
-		return value + " weeks"
-	default:
-		return duration
+func (t *Translator) hasTimeBucket(dimensions influxql.Dimensions) bool {
+	for _, dim := range dimensions {
+		if call, ok := dim.Expr.(*influxql.Call); ok {
+			if strings.ToLower(call.Name) == "time" {
+				return true
+			}
+		}
 	}
+	return false
+}
+
+func (t *Translator) getTimeBucketInterval(dimensions influxql.Dimensions) string {
+	for _, dim := range dimensions {
+		if call, ok := dim.Expr.(*influxql.Call); ok {
+			if strings.ToLower(call.Name) == "time" && len(call.Args) > 0 {
+				return t.translateExpr(call.Args[0])
+			}
+		}
+	}
+	return "INTERVAL '1 minute'" // default fallback
 }
 
 func (t *Translator) getMeasurementName(source influxql.Source) (string, error) {
