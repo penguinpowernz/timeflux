@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/penguinpowernz/timeflux/metrics"
 )
 
 // MeasurementSchema holds the schema for a single measurement
@@ -21,15 +22,17 @@ type MeasurementSchema struct {
 type SchemaManager struct {
 	mu               sync.RWMutex
 	schemas          map[string]map[string]*MeasurementSchema // database -> measurement -> schema
-	measurementLocks sync.Map                                 // key: "database.measurement" -> *sync.Mutex for DDL
+	measurementLocks map[string]*sync.Mutex                   // key: "database.measurement" -> *sync.Mutex for DDL
+	locksMu          sync.Mutex                               // protects measurementLocks map
 	pool             *pgxpool.Pool
 }
 
 // NewSchemaManager creates a new SchemaManager
 func NewSchemaManager(pool *pgxpool.Pool) *SchemaManager {
 	return &SchemaManager{
-		schemas: make(map[string]map[string]*MeasurementSchema),
-		pool:    pool,
+		schemas:          make(map[string]map[string]*MeasurementSchema),
+		measurementLocks: make(map[string]*sync.Mutex),
+		pool:             pool,
 	}
 }
 
@@ -55,11 +58,79 @@ func (sm *SchemaManager) LoadExistingSchemas(ctx context.Context) error {
 		schemas = append(schemas, schemaName)
 	}
 
-	// Load tables and columns for each schema
-	for _, schemaName := range schemas {
-		if err := sm.loadSchemaForDatabase(ctx, schemaName); err != nil {
-			log.Printf("Warning: failed to load schema for database %s: %v", schemaName, err)
+	// Load tables and columns for all schemas in a single query
+	if err := sm.loadAllSchemas(ctx, schemas); err != nil {
+		return fmt.Errorf("failed to load schemas: %w", err)
+	}
+
+	return nil
+}
+
+func (sm *SchemaManager) loadAllSchemas(ctx context.Context, databases []string) error {
+	if len(databases) == 0 {
+		return nil
+	}
+
+	// Build schema list for WHERE clause
+	schemaList := make([]string, len(databases))
+	for i, db := range databases {
+		schemaList[i] = "'" + strings.ReplaceAll(db, "'", "''") + "'"
+	}
+
+	// Query all columns for all schemas at once
+	query := fmt.Sprintf(`
+		SELECT
+			table_schema,
+			table_name,
+			column_name,
+			data_type
+		FROM information_schema.columns
+		WHERE table_schema IN (%s)
+			AND table_name != '_timeflux_metadata'
+		ORDER BY table_schema, table_name, ordinal_position
+	`, strings.Join(schemaList, ", "))
+
+	rows, err := sm.pool.Query(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to query columns: %w", err)
+	}
+	defer rows.Close()
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	for rows.Next() {
+		var schemaName, tableName, columnName, dataType string
+		if err := rows.Scan(&schemaName, &tableName, &columnName, &dataType); err != nil {
+			return fmt.Errorf("failed to scan column info: %w", err)
 		}
+
+		if columnName == "time" {
+			continue // Skip the time column
+		}
+
+		if sm.schemas[schemaName] == nil {
+			sm.schemas[schemaName] = make(map[string]*MeasurementSchema)
+		}
+		if sm.schemas[schemaName][tableName] == nil {
+			sm.schemas[schemaName][tableName] = &MeasurementSchema{
+				Tags:   make(map[string]bool),
+				Fields: make(map[string]string),
+			}
+		}
+
+		// Heuristic: TEXT columns are likely tags
+		sqlType := postgresTypeToSQL(dataType)
+		if sqlType == "TEXT" {
+			sm.schemas[schemaName][tableName].Tags[columnName] = true
+		} else {
+			sm.schemas[schemaName][tableName].Fields[columnName] = sqlType
+		}
+	}
+
+	// Load metadata for all databases
+	for _, database := range databases {
+		sm.loadMetadata(ctx, database)
 	}
 
 	return nil
@@ -161,18 +232,28 @@ func (sm *SchemaManager) loadMetadata(ctx context.Context, database string) {
 
 // EnsureSchema ensures the schema exists for the given measurement with the specified tags and fields
 func (sm *SchemaManager) EnsureSchema(ctx context.Context, database, measurement string, tags map[string]bool, fields map[string]string) error {
+	m := metrics.Global()
+
 	// Fast path: check if schema already has all needed columns
 	sm.mu.RLock()
 	if sm.hasAllColumns(database, measurement, tags, fields) {
 		sm.mu.RUnlock()
+		m.SchemaCacheHits.Add(1)
 		return nil
 	}
 	sm.mu.RUnlock()
+	m.SchemaCacheMisses.Add(1)
 
 	// Slow path: acquire measurement-specific lock for DDL
 	lockKey := database + "." + measurement
-	lockVal, _ := sm.measurementLocks.LoadOrStore(lockKey, &sync.Mutex{})
-	lock := lockVal.(*sync.Mutex)
+
+	sm.locksMu.Lock()
+	lock, exists := sm.measurementLocks[lockKey]
+	if !exists {
+		lock = &sync.Mutex{}
+		sm.measurementLocks[lockKey] = lock
+	}
+	sm.locksMu.Unlock()
 
 	lock.Lock()
 	defer lock.Unlock()
@@ -186,7 +267,11 @@ func (sm *SchemaManager) EnsureSchema(ctx context.Context, database, measurement
 	sm.mu.RUnlock()
 
 	// Perform DDL operations
-	return sm.ensureSchemaSlow(ctx, database, measurement, tags, fields)
+	err := sm.ensureSchemaSlow(ctx, database, measurement, tags, fields)
+	if err == nil {
+		m.SchemaEvolutions.Add(1)
+	}
+	return err
 }
 
 func (sm *SchemaManager) hasAllColumns(database, measurement string, tags map[string]bool, fields map[string]string) bool {
@@ -273,6 +358,7 @@ func (sm *SchemaManager) ensureDatabase(ctx context.Context, database string) er
 	}
 
 	// Create metadata table
+	tableName := pgx.Identifier{database, "_timeflux_metadata"}.Sanitize()
 	_, err = sm.pool.Exec(ctx, fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			measurement TEXT NOT NULL,
@@ -281,9 +367,17 @@ func (sm *SchemaManager) ensureDatabase(ctx context.Context, database string) er
 			is_tag BOOLEAN NOT NULL,
 			PRIMARY KEY (measurement, column_name)
 		)
-	`, pgx.Identifier{database, "_timeflux_metadata"}.Sanitize()))
+	`, tableName))
 	if err != nil {
 		return fmt.Errorf("failed to create metadata table: %w", err)
+	}
+
+	// Create index on is_tag for faster SHOW TAG KEYS / SHOW FIELD KEYS queries
+	_, err = sm.pool.Exec(ctx, fmt.Sprintf(`
+		CREATE INDEX IF NOT EXISTS %s ON %s (is_tag, measurement)
+	`, pgx.Identifier{database + "_timeflux_metadata_is_tag_idx"}.Sanitize(), tableName))
+	if err != nil {
+		return fmt.Errorf("failed to create metadata index: %w", err)
 	}
 
 	return nil
@@ -301,9 +395,10 @@ func (sm *SchemaManager) ensureTable(ctx context.Context, database, measurement 
 	}
 
 	// Convert to hypertable (idempotent - will succeed if already a hypertable)
+	tableName := pgx.Identifier{database, measurement}.Sanitize()
 	_, err = sm.pool.Exec(ctx, fmt.Sprintf(`
-		SELECT create_hypertable(%s, 'time', if_not_exists => TRUE)
-	`, quoteString(database+"."+measurement)))
+		SELECT create_hypertable('%s', 'time', if_not_exists => TRUE)
+	`, strings.ReplaceAll(tableName, `"`, ``)))
 	if err != nil {
 		// Ignore error if already a hypertable
 		if !strings.Contains(err.Error(), "already a hypertable") {
@@ -423,6 +518,3 @@ func postgresTypeToSQL(pgType string) string {
 	}
 }
 
-func quoteString(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
-}

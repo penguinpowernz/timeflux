@@ -7,9 +7,11 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/penguinpowernz/timeflux/metrics"
 	"github.com/penguinpowernz/timeflux/schema"
 )
 
@@ -30,6 +32,14 @@ func NewHandler(pool *pgxpool.Pool, schemaManager *schema.SchemaManager) *Handle
 // ServeHTTP handles HTTP requests to the write endpoint
 // POST /write?db={database}
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	m := metrics.Global()
+	m.WriteRequests.Add(1)
+
+	defer func() {
+		m.WriteDuration.Record(time.Since(start))
+	}()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -69,14 +79,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		pointsByMeasurement[point.Measurement] = append(pointsByMeasurement[point.Measurement], point)
 	}
 
-	// Write each measurement batch
-	ctx := r.Context()
+	// Write each measurement batch with timeout
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
 	for measurement, measurementPoints := range pointsByMeasurement {
 		if err := h.writePoints(ctx, database, measurement, measurementPoints); err != nil {
 			log.Printf("Error writing points to %s.%s: %v", database, measurement, err)
+			m.WriteErrors.Add(1)
 			http.Error(w, fmt.Sprintf("Failed to write data: %v", err), http.StatusInternalServerError)
 			return
 		}
+		m.PointsWritten.Add(uint64(len(measurementPoints)))
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -99,13 +113,9 @@ func (h *Handler) writePoints(ctx context.Context, database, measurement string,
 			fieldType := string(GetFieldType(value))
 			if existing, ok := allFields[field]; ok {
 				// If we see conflicting types, prefer the more general one
+				// Type hierarchy: TEXT > DOUBLE PRECISION > BIGINT > BOOLEAN
 				if existing != fieldType {
-					// Prefer DOUBLE PRECISION over BIGINT, TEXT over everything
-					if fieldType == string(FieldTypeString) {
-						allFields[field] = fieldType
-					} else if fieldType == string(FieldTypeFloat) && existing == string(FieldTypeInt) {
-						allFields[field] = fieldType
-					}
+					allFields[field] = resolveFieldType(existing, fieldType)
 				}
 			} else {
 				allFields[field] = fieldType
@@ -204,6 +214,25 @@ func (c *copyFromRowsAdapter) Err() error {
 }
 
 // Batch insert using parameterized query (fallback if COPY doesn't work)
+// resolveFieldType determines the most general type between two field types
+// Type hierarchy: TEXT > DOUBLE PRECISION > BIGINT > BOOLEAN
+func resolveFieldType(type1, type2 string) string {
+	typeRank := map[string]int{
+		string(FieldTypeBool):   1,
+		string(FieldTypeInt):    2,
+		string(FieldTypeFloat):  3,
+		string(FieldTypeString): 4,
+	}
+
+	rank1 := typeRank[type1]
+	rank2 := typeRank[type2]
+
+	if rank1 > rank2 {
+		return type1
+	}
+	return type2
+}
+
 func (h *Handler) insertPointsBatch(ctx context.Context, database, measurement string, points []*Point, columns []string) error {
 	if len(points) == 0 {
 		return nil

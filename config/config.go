@@ -21,12 +21,14 @@ type ServerConfig struct {
 
 // DatabaseConfig holds PostgreSQL/TimescaleDB connection configuration
 type DatabaseConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	Database string `yaml:"database"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	PoolSize int    `yaml:"pool_size"`
+	Host            string `yaml:"host"`
+	Port            int    `yaml:"port"`
+	Database        string `yaml:"database"`
+	User            string `yaml:"user"`
+	Password        string `yaml:"password"`
+	PoolSize        int    `yaml:"pool_size"`
+	MaxConnLifetime int    `yaml:"max_conn_lifetime"` // in seconds
+	MaxConnIdleTime int    `yaml:"max_conn_idle_time"` // in seconds
 }
 
 // LoggingConfig holds logging configuration
@@ -57,6 +59,12 @@ func Load(path string) (*Config, error) {
 	if cfg.Database.PoolSize == 0 {
 		cfg.Database.PoolSize = 32
 	}
+	if cfg.Database.MaxConnLifetime == 0 {
+		cfg.Database.MaxConnLifetime = 3600 // 1 hour
+	}
+	if cfg.Database.MaxConnIdleTime == 0 {
+		cfg.Database.MaxConnIdleTime = 300 // 5 minutes
+	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"
 	}
@@ -70,12 +78,14 @@ func Load(path string) (*Config, error) {
 // ConnectionString returns the PostgreSQL connection string
 func (c *DatabaseConfig) ConnectionString() string {
 	return fmt.Sprintf(
-		"postgres://%s:%s@%s:%d/%s?pool_max_conns=%d",
+		"postgres://%s:%s@%s:%d/%s?pool_max_conns=%d&pool_max_conn_lifetime=%ds&pool_max_conn_idle_time=%ds",
 		c.User,
 		c.Password,
 		c.Host,
 		c.Port,
 		c.Database,
 		c.PoolSize,
+		c.MaxConnLifetime,
+		c.MaxConnIdleTime,
 	)
 }

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/penguinpowernz/timeflux/metrics"
 )
 
 // Handler handles InfluxDB query requests
@@ -25,24 +27,38 @@ func NewHandler(pool *pgxpool.Pool) *Handler {
 // ServeHTTP handles HTTP requests to the query endpoint
 // GET or POST /query?db={database}&q={query}
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+	start := time.Now()
+	m := metrics.Global()
+	m.QueryRequests.Add(1)
 
-	// Get database parameter
-	database := r.URL.Query().Get("db")
-	if database == "" {
-		http.Error(w, "database parameter required", http.StatusBadRequest)
+	defer func() {
+		m.QueryDuration.Record(time.Since(start))
+	}()
+
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		log.Printf("%s /query: Method not allowed: %s", r.Method, r.Method)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// Get query parameter
 	query := r.URL.Query().Get("q")
+	// Get database parameter
+	database := r.URL.Query().Get("db")
+
+	log.Printf("%s /query: db=%s, query=%s", r.Method, database, query)
+
+	if database == "" {
+		log.Printf("%s /query: Missing database parameter", r.Method)
+		http.Error(w, "database parameter required", http.StatusBadRequest)
+		return
+	}
+
 	if query == "" {
 		// Try to get from POST body
 		if r.Method == http.MethodPost {
 			if err := r.ParseForm(); err != nil {
+				log.Printf("%s /query: Failed to parse form: %v", r.Method, err)
 				http.Error(w, "Failed to parse form", http.StatusBadRequest)
 				return
 			}
@@ -51,6 +67,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if query == "" {
+		log.Printf("%s /query: Missing query parameter", r.Method)
 		http.Error(w, "query parameter required", http.StatusBadRequest)
 		return
 	}
@@ -60,6 +77,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sql, err := translator.Translate(query)
 	if err != nil {
 		log.Printf("Error translating query: %v", err)
+		m.QueryErrors.Add(1)
 		h.sendErrorResponse(w, fmt.Sprintf("Failed to translate query: %v", err))
 		return
 	}
@@ -71,6 +89,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	results, err := h.executeQuery(ctx, sql)
 	if err != nil {
 		log.Printf("Error executing query: %v", err)
+		m.QueryErrors.Add(1)
 		h.sendErrorResponse(w, fmt.Sprintf("Failed to execute query: %v", err))
 		return
 	}

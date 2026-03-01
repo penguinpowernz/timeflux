@@ -177,7 +177,7 @@ func (t *Translator) translateExpr(expr influxql.Expr) string {
 		return fmt.Sprintf("%v", e.Val)
 
 	case *influxql.StringLiteral:
-		return quoteString(e.Val)
+		return "'" + strings.ReplaceAll(e.Val, "'", "''") + "'"
 
 	case *influxql.BooleanLiteral:
 		if e.Val {
@@ -186,7 +186,7 @@ func (t *Translator) translateExpr(expr influxql.Expr) string {
 		return "FALSE"
 
 	case *influxql.TimeLiteral:
-		return quoteString(e.Val.Format(time.RFC3339Nano))
+		return "'" + strings.ReplaceAll(e.Val.Format(time.RFC3339Nano), "'", "''") + "'"
 
 	case *influxql.DurationLiteral:
 		// Convert InfluxDB duration to PostgreSQL interval
@@ -263,8 +263,12 @@ func (t *Translator) translateCall(call *influxql.Call) string {
 
 	case "percentile":
 		if len(call.Args) >= 2 {
-			return fmt.Sprintf("PERCENTILE_CONT(%s) WITHIN GROUP (ORDER BY %s)",
-				t.translateExpr(call.Args[1]),
+			// Args: [field, percentile_value]
+			// PostgreSQL percentile_cont expects a fraction (0.0-1.0), not 0-100
+			percentileExpr := t.translateExpr(call.Args[1])
+			// If it's a number literal > 1, divide by 100
+			return fmt.Sprintf("percentile_cont(%s / 100.0) WITHIN GROUP (ORDER BY %s)",
+				percentileExpr,
 				t.translateExpr(call.Args[0]))
 		}
 
@@ -446,7 +450,7 @@ func (t *Translator) translateShowTagKeys(stmt *influxql.ShowTagKeysStatement) (
 		if err != nil {
 			return "", err
 		}
-		sql.WriteString(fmt.Sprintf(" AND measurement = %s", quoteString(measurement)))
+		sql.WriteString(fmt.Sprintf(" AND measurement = '%s'", strings.ReplaceAll(measurement, "'", "''")))
 	}
 
 	sql.WriteString(" ORDER BY tagKey")
@@ -509,13 +513,10 @@ func (t *Translator) translateShowFieldKeys(stmt *influxql.ShowFieldKeysStatemen
 		if err != nil {
 			return "", err
 		}
-		sql.WriteString(fmt.Sprintf(" AND measurement = %s", quoteString(measurement)))
+		sql.WriteString(fmt.Sprintf(" AND measurement = '%s'", strings.ReplaceAll(measurement, "'", "''")))
 	}
 
 	sql.WriteString(" ORDER BY fieldKey")
 	return sql.String(), nil
 }
 
-func quoteString(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
-}

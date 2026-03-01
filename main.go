@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/penguinpowernz/timeflux/config"
+	"github.com/penguinpowernz/timeflux/metrics"
 	"github.com/penguinpowernz/timeflux/query"
 	"github.com/penguinpowernz/timeflux/schema"
 	"github.com/penguinpowernz/timeflux/write"
@@ -72,6 +74,15 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"healthy"}`))
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		snapshot := metrics.Global().Snapshot()
+		if err := json.NewEncoder(w).Encode(snapshot); err != nil {
+			log.Printf("Error encoding metrics: %v", err)
+		}
 	})
 
 	// Create HTTP server
