@@ -80,7 +80,7 @@ func main() {
 	router.POST("/query", queryHandler.Handle)
 
 	router.GET("/ping", func(c *gin.Context) {
-		c.Status(http.StatusNoContent)
+		c.JSON(http.StatusOK, gin.H{"version": "timeflux (CLI not supported)"})
 	})
 
 	router.GET("/health", func(c *gin.Context) {
@@ -122,6 +122,10 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Server shutdown error: %v", err)
 	}
+
+	// Shutdown schema manager (wait for background index creation to finish)
+	log.Printf("Waiting for background index creation to complete...")
+	schemaManager.Shutdown()
 
 	log.Printf("Server stopped")
 }

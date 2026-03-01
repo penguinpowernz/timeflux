@@ -22,18 +22,65 @@ type MeasurementSchema struct {
 type SchemaManager struct {
 	mu               sync.RWMutex
 	schemas          map[string]map[string]*MeasurementSchema // database -> measurement -> schema
-	measurementLocks map[string]*sync.Mutex                   // key: "database.measurement" -> *sync.Mutex for DDL
-	locksMu          sync.Mutex                               // protects measurementLocks map
+	measurementLocks sync.Map                                 // key: "database.measurement" -> *sync.Mutex for DDL
 	pool             *pgxpool.Pool
+	indexQueue       chan indexJob // background index creation queue
+	indexWorkers     sync.WaitGroup
+}
+
+type indexJob struct {
+	database    string
+	measurement string
+	columnName  string
+	isTag       bool
 }
 
 // NewSchemaManager creates a new SchemaManager
 func NewSchemaManager(pool *pgxpool.Pool) *SchemaManager {
-	return &SchemaManager{
-		schemas:          make(map[string]map[string]*MeasurementSchema),
-		measurementLocks: make(map[string]*sync.Mutex),
-		pool:             pool,
+	sm := &SchemaManager{
+		schemas:    make(map[string]map[string]*MeasurementSchema),
+		pool:       pool,
+		indexQueue: make(chan indexJob, 1000),
 	}
+
+	// Start background index workers
+	numWorkers := 4
+	for i := 0; i < numWorkers; i++ {
+		sm.indexWorkers.Add(1)
+		go sm.indexWorker()
+	}
+
+	return sm
+}
+
+// indexWorker processes background index creation jobs
+func (sm *SchemaManager) indexWorker() {
+	defer sm.indexWorkers.Done()
+
+	for job := range sm.indexQueue {
+		ctx := context.Background()
+		if job.isTag {
+			indexName := fmt.Sprintf("%s_%s_idx", job.measurement, job.columnName)
+			_, err := sm.pool.Exec(ctx, fmt.Sprintf(
+				"CREATE INDEX IF NOT EXISTS %s ON %s (%s, time DESC)",
+				pgx.Identifier{indexName}.Sanitize(),
+				pgx.Identifier{job.database, job.measurement}.Sanitize(),
+				pgx.Identifier{job.columnName}.Sanitize(),
+			))
+			if err != nil {
+				log.Printf("Background index creation failed for %s.%s.%s: %v",
+					job.database, job.measurement, job.columnName, err)
+			} else {
+				log.Printf("Created index on %s.%s(%s)", job.database, job.measurement, job.columnName)
+			}
+		}
+	}
+}
+
+// Shutdown gracefully stops the schema manager
+func (sm *SchemaManager) Shutdown() {
+	close(sm.indexQueue)
+	sm.indexWorkers.Wait()
 }
 
 // LoadExistingSchemas loads existing table schemas from PostgreSQL
@@ -247,13 +294,9 @@ func (sm *SchemaManager) EnsureSchema(ctx context.Context, database, measurement
 	// Slow path: acquire measurement-specific lock for DDL
 	lockKey := database + "." + measurement
 
-	sm.locksMu.Lock()
-	lock, exists := sm.measurementLocks[lockKey]
-	if !exists {
-		lock = &sync.Mutex{}
-		sm.measurementLocks[lockKey] = lock
-	}
-	sm.locksMu.Unlock()
+	// Use sync.Map to avoid lock contention
+	lockIface, _ := sm.measurementLocks.LoadOrStore(lockKey, &sync.Mutex{})
+	lock := lockIface.(*sync.Mutex)
 
 	lock.Lock()
 	defer lock.Unlock()
@@ -312,17 +355,61 @@ func (sm *SchemaManager) ensureSchemaSlow(ctx context.Context, database, measure
 		return err
 	}
 
-	// Add missing tags
-	for tag := range tags {
-		if err := sm.ensureTagColumn(ctx, database, measurement, tag); err != nil {
-			return err
+	// Get current schema to determine what's missing
+	sm.mu.RLock()
+	existingSchema, exists := sm.schemas[database][measurement]
+	sm.mu.RUnlock()
+
+	missingTags := make(map[string]bool)
+	missingFields := make(map[string]string)
+
+	if exists {
+		for tag := range tags {
+			if !existingSchema.Tags[tag] {
+				missingTags[tag] = true
+			}
 		}
+		for field, fieldType := range fields {
+			if existingType, ok := existingSchema.Fields[field]; !ok || existingType != fieldType {
+				missingFields[field] = fieldType
+			}
+		}
+	} else {
+		missingTags = tags
+		missingFields = fields
 	}
 
-	// Add missing fields
-	for field, fieldType := range fields {
-		if err := sm.ensureFieldColumn(ctx, database, measurement, field, fieldType); err != nil {
-			return err
+	// Batch all DDL operations in a single transaction
+	if len(missingTags) > 0 || len(missingFields) > 0 {
+		tx, err := sm.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to begin transaction: %w", err)
+		}
+		defer tx.Rollback(ctx)
+
+		// Add missing tags (without indexes in critical path)
+		for tag := range missingTags {
+			if err := sm.ensureTagColumnTx(ctx, tx, database, measurement, tag); err != nil {
+				return err
+			}
+			// Queue index creation in background
+			sm.indexQueue <- indexJob{
+				database:    database,
+				measurement: measurement,
+				columnName:  tag,
+				isTag:       true,
+			}
+		}
+
+		// Add missing fields
+		for field, fieldType := range missingFields {
+			if err := sm.ensureFieldColumnTx(ctx, tx, database, measurement, field, fieldType); err != nil {
+				return err
+			}
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("failed to commit schema changes: %w", err)
 		}
 	}
 
@@ -410,19 +497,19 @@ func (sm *SchemaManager) ensureTable(ctx context.Context, database, measurement 
 }
 
 func (sm *SchemaManager) ensureTagColumn(ctx context.Context, database, measurement, tag string) error {
-	// Add column
-	_, err := sm.pool.Exec(ctx, fmt.Sprintf(
-		"ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s TEXT",
-		pgx.Identifier{database, measurement}.Sanitize(),
-		pgx.Identifier{tag}.Sanitize(),
-	))
+	tx, err := sm.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to add tag column: %w", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := sm.ensureTagColumnTx(ctx, tx, database, measurement, tag); err != nil {
+		return err
 	}
 
-	// Create index
+	// Create index in critical path (old behavior, kept for compatibility)
 	indexName := fmt.Sprintf("%s_%s_idx", measurement, tag)
-	_, err = sm.pool.Exec(ctx, fmt.Sprintf(
+	_, err = tx.Exec(ctx, fmt.Sprintf(
 		"CREATE INDEX IF NOT EXISTS %s ON %s (%s, time DESC)",
 		pgx.Identifier{indexName}.Sanitize(),
 		pgx.Identifier{database, measurement}.Sanitize(),
@@ -432,8 +519,23 @@ func (sm *SchemaManager) ensureTagColumn(ctx context.Context, database, measurem
 		return fmt.Errorf("failed to create index: %w", err)
 	}
 
+	return tx.Commit(ctx)
+}
+
+// ensureTagColumnTx adds a tag column within a transaction (without index)
+func (sm *SchemaManager) ensureTagColumnTx(ctx context.Context, tx pgx.Tx, database, measurement, tag string) error {
+	// Add column
+	_, err := tx.Exec(ctx, fmt.Sprintf(
+		"ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s TEXT",
+		pgx.Identifier{database, measurement}.Sanitize(),
+		pgx.Identifier{tag}.Sanitize(),
+	))
+	if err != nil {
+		return fmt.Errorf("failed to add tag column: %w", err)
+	}
+
 	// Update metadata
-	_, err = sm.pool.Exec(ctx, fmt.Sprintf(`
+	_, err = tx.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %s (measurement, column_name, column_type, is_tag)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (measurement, column_name) DO UPDATE SET is_tag = $4
@@ -447,8 +549,23 @@ func (sm *SchemaManager) ensureTagColumn(ctx context.Context, database, measurem
 }
 
 func (sm *SchemaManager) ensureFieldColumn(ctx context.Context, database, measurement, field, sqlType string) error {
+	tx, err := sm.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := sm.ensureFieldColumnTx(ctx, tx, database, measurement, field, sqlType); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// ensureFieldColumnTx adds a field column within a transaction
+func (sm *SchemaManager) ensureFieldColumnTx(ctx context.Context, tx pgx.Tx, database, measurement, field, sqlType string) error {
 	// Add column
-	_, err := sm.pool.Exec(ctx, fmt.Sprintf(
+	_, err := tx.Exec(ctx, fmt.Sprintf(
 		"ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s",
 		pgx.Identifier{database, measurement}.Sanitize(),
 		pgx.Identifier{field}.Sanitize(),
@@ -459,7 +576,7 @@ func (sm *SchemaManager) ensureFieldColumn(ctx context.Context, database, measur
 	}
 
 	// Update metadata
-	_, err = sm.pool.Exec(ctx, fmt.Sprintf(`
+	_, err = tx.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %s (measurement, column_name, column_type, is_tag)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (measurement, column_name) DO UPDATE SET column_type = $3, is_tag = $4

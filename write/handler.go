@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -78,14 +79,41 @@ func (h *Handler) Handle(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
+	// Parallelize writes across measurements
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(pointsByMeasurement))
+
 	for measurement, measurementPoints := range pointsByMeasurement {
-		if err := h.writePoints(ctx, database, measurement, measurementPoints); err != nil {
-			log.Printf("Error writing points to %s.%s: %v", database, measurement, err)
+		wg.Add(1)
+		go func(meas string, pts []*Point) {
+			defer wg.Done()
+			if err := h.writePoints(ctx, database, meas, pts); err != nil {
+				log.Printf("Error writing points to %s.%s: %v", database, meas, err)
+				select {
+				case errCh <- err:
+				default:
+					// Error channel full, log it
+					log.Printf("Additional error (channel full): %v", err)
+				}
+			} else {
+				m.PointsWritten.Add(uint64(len(pts)))
+			}
+		}(measurement, measurementPoints)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	// Check for errors - read first error if any
+	select {
+	case err := <-errCh:
+		if err != nil {
 			m.WriteErrors.Add(1)
 			c.String(http.StatusInternalServerError, "Failed to write data: %v", err)
 			return
 		}
-		m.PointsWritten.Add(uint64(len(measurementPoints)))
+	default:
+		// No errors
 	}
 
 	c.Status(http.StatusNoContent)
@@ -137,15 +165,16 @@ func (h *Handler) writePoints(ctx context.Context, database, measurement string,
 	columns = append(columns, tagColumns...)
 	columns = append(columns, fieldColumns...)
 
-	// Use COPY for bulk insert
+	// Use COPY for bulk insert with streaming source
 	tableName := pgx.Identifier{database, measurement}.Sanitize()
-	copyColumns := make([]string, len(columns))
-	for i, col := range columns {
-		copyColumns[i] = pgx.Identifier{col}.Sanitize()
+
+	// Create streaming copy source (avoids materializing all rows)
+	copySource := &pointsCopySource{
+		points:  points,
+		columns: columns,
+		idx:     -1,
 	}
 
-	// Start COPY
-	copySource := pgx.CopyFromRows(makeRows(points, columns))
 	copyCount, err := h.pool.CopyFrom(
 		ctx,
 		pgx.Identifier{database, measurement},
@@ -160,51 +189,51 @@ func (h *Handler) writePoints(ctx context.Context, database, measurement string,
 	return nil
 }
 
-func makeRows(points []*Point, columns []string) [][]interface{} {
-	rows := make([][]interface{}, len(points))
-
-	for i, point := range points {
-		row := make([]interface{}, len(columns))
-		for j, col := range columns {
-			switch col {
-			case "time":
-				row[j] = point.Timestamp
-			default:
-				// Check if it's a tag
-				if val, ok := point.Tags[col]; ok {
-					row[j] = val
-				} else if val, ok := point.Fields[col]; ok {
-					row[j] = val
-				} else {
-					row[j] = nil
-				}
-			}
-		}
-		rows[i] = row
-	}
-
-	return rows
+// pointsCopySource implements pgx.CopyFromSource to stream rows without materializing
+type pointsCopySource struct {
+	points  []*Point
+	columns []string
+	idx     int
+	rowBuf  []interface{} // reuse buffer
 }
 
-// CopyFromRows adapter
-type copyFromRowsAdapter struct {
-	rows [][]interface{}
-	idx  int
+func (p *pointsCopySource) Next() bool {
+	p.idx++
+	return p.idx < len(p.points)
 }
 
-func (c *copyFromRowsAdapter) Next() bool {
-	c.idx++
-	return c.idx < len(c.rows)
-}
-
-func (c *copyFromRowsAdapter) Values() ([]interface{}, error) {
-	if c.idx >= len(c.rows) {
+func (p *pointsCopySource) Values() ([]interface{}, error) {
+	if p.idx >= len(p.points) {
 		return nil, fmt.Errorf("no more rows")
 	}
-	return c.rows[c.idx], nil
+
+	point := p.points[p.idx]
+
+	// Reuse buffer if possible
+	if p.rowBuf == nil {
+		p.rowBuf = make([]interface{}, len(p.columns))
+	}
+
+	for j, col := range p.columns {
+		switch col {
+		case "time":
+			p.rowBuf[j] = point.Timestamp
+		default:
+			// Check if it's a tag
+			if val, ok := point.Tags[col]; ok {
+				p.rowBuf[j] = val
+			} else if val, ok := point.Fields[col]; ok {
+				p.rowBuf[j] = val
+			} else {
+				p.rowBuf[j] = nil
+			}
+		}
+	}
+
+	return p.rowBuf, nil
 }
 
-func (c *copyFromRowsAdapter) Err() error {
+func (p *pointsCopySource) Err() error {
 	return nil
 }
 
