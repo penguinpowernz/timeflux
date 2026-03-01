@@ -1,0 +1,32 @@
+# Binaries
+timeflux
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+*.test
+
+# Development files
+.git
+.gitignore
+.claude
+*.md
+BRIEF.md
+PROMPT.md
+
+# Config files (will be mounted)
+config.yaml
+
+# Docker files
+docker-compose.yml
+Dockerfile
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~

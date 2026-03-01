@@ -1,0 +1,14 @@
+server:
+  port: 8086  # Match InfluxDB default port
+
+database:
+  host: localhost
+  port: 5432
+  database: timeseries
+  user: postgres
+  password: secret
+  pool_size: 32
+
+logging:
+  level: info  # debug, info, warn, error
+  format: json
