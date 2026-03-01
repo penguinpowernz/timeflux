@@ -63,6 +63,37 @@ func main() {
 	writeHandler := write.NewHandler(pool, schemaManager)
 	queryHandler := query.NewHandler(pool)
 
+	// Initialize WAL if enabled
+	var walBuffer *write.WALBuffer
+	if cfg.WAL.Enabled {
+		log.Printf("Initializing WAL buffer...")
+		walCfg := write.WALConfig{
+			Path:             cfg.WAL.Path,
+			NumWorkers:       cfg.WAL.NumWorkers,
+			FsyncIntervalMs:  cfg.WAL.FsyncIntervalMs,
+			SegmentSizeMB:    cfg.WAL.SegmentSizeMB,
+			SegmentCacheSize: cfg.WAL.SegmentCacheSize,
+			NoSync:           cfg.WAL.NoSync,
+		}
+
+		var err error
+		walBuffer, err = write.NewWALBuffer(walCfg, pool, schemaManager)
+		if err != nil {
+			log.Fatalf("Failed to initialize WAL: %v", err)
+		}
+
+		// Recover from WAL on startup
+		if err := walBuffer.RecoverFromWAL(); err != nil {
+			log.Fatalf("Failed to recover from WAL: %v", err)
+		}
+
+		// Attach WAL to write handler
+		writeHandler.SetWALBuffer(walBuffer)
+		log.Printf("WAL enabled: %s", cfg.WAL.Path)
+	} else {
+		log.Printf("WAL disabled, using synchronous writes")
+	}
+
 	// Setup Gin router
 	if cfg.Logging.Level != "debug" {
 		gin.SetMode(gin.ReleaseMode)
@@ -121,6 +152,14 @@ func main() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Server shutdown error: %v", err)
+	}
+
+	// Shutdown WAL buffer if enabled
+	if walBuffer != nil {
+		log.Printf("Shutting down WAL buffer...")
+		if err := walBuffer.Shutdown(); err != nil {
+			log.Printf("WAL shutdown error: %v", err)
+		}
 	}
 
 	// Shutdown schema manager (wait for background index creation to finish)

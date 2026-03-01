@@ -1,0 +1,23 @@
+server:
+  port: 8086
+
+database:
+  host: localhost
+  port: 5432
+  database: timeseries
+  user: postgres
+  password: secret
+  pool_size: 32
+
+logging:
+  level: info
+  format: json
+
+wal:
+  enabled: true
+  path: /tmp/timeflux/wal
+  num_workers: 8
+  fsync_interval_ms: 100
+  segment_size_mb: 64
+  segment_cache_size: 2
+  no_sync: false

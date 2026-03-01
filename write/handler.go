@@ -20,6 +20,7 @@ import (
 type Handler struct {
 	pool          *pgxpool.Pool
 	schemaManager *schema.SchemaManager
+	walBuffer     *WALBuffer // optional, nil if WAL disabled
 }
 
 // NewHandler creates a new write handler
@@ -27,7 +28,13 @@ func NewHandler(pool *pgxpool.Pool, schemaManager *schema.SchemaManager) *Handle
 	return &Handler{
 		pool:          pool,
 		schemaManager: schemaManager,
+		walBuffer:     nil, // set by SetWALBuffer if enabled
 	}
+}
+
+// SetWALBuffer enables WAL buffering for this handler
+func (h *Handler) SetWALBuffer(walBuffer *WALBuffer) {
+	h.walBuffer = walBuffer
 }
 
 // Handle processes write requests using Gin context
@@ -69,6 +76,20 @@ func (h *Handler) Handle(c *gin.Context) {
 		return
 	}
 
+	// If WAL is enabled, append to WAL and return immediately
+	if h.walBuffer != nil {
+		if err := h.walBuffer.Append(database, body); err != nil {
+			log.Printf("Error appending to WAL: %v", err)
+			m.WriteErrors.Add(1)
+			c.String(http.StatusInternalServerError, "Failed to write to WAL: %v", err)
+			return
+		}
+		// Return success immediately (data will be processed by background workers)
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	// Synchronous write path (WAL disabled)
 	// Group points by measurement
 	pointsByMeasurement := make(map[string][]*Point)
 	for _, point := range points {

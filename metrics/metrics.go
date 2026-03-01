@@ -24,6 +24,15 @@ type Metrics struct {
 	SchemaCacheHits   atomic.Uint64
 	SchemaCacheMisses atomic.Uint64
 
+	// WAL metrics
+	WALWrites         atomic.Uint64
+	WALBytes          atomic.Uint64
+	WALWriteErrors    atomic.Uint64
+	WALCorruptions    atomic.Uint64
+	WALReplaySuccess  atomic.Uint64
+	WALReplayFailures atomic.Uint64
+	WALWriteDuration  *DurationStats
+
 	// Connection pool metrics
 	PoolAcquireCount  atomic.Uint64
 	PoolAcquireDuration *DurationStats
@@ -41,6 +50,7 @@ type DurationStats struct {
 var globalMetrics = &Metrics{
 	WriteDuration:       &DurationStats{min: time.Hour},
 	QueryDuration:       &DurationStats{min: time.Hour},
+	WALWriteDuration:    &DurationStats{min: time.Hour},
 	PoolAcquireDuration: &DurationStats{min: time.Hour},
 }
 
@@ -82,6 +92,7 @@ func (d *DurationStats) Stats() (avg, min, max time.Duration, count uint64) {
 func (m *Metrics) Snapshot() map[string]interface{} {
 	writeAvg, writeMin, writeMax, writeCount := m.WriteDuration.Stats()
 	queryAvg, queryMin, queryMax, queryCount := m.QueryDuration.Stats()
+	walAvg, walMin, walMax, walCount := m.WALWriteDuration.Stats()
 	poolAvg, poolMin, poolMax, poolCount := m.PoolAcquireDuration.Stats()
 
 	return map[string]interface{}{
@@ -106,6 +117,18 @@ func (m *Metrics) Snapshot() map[string]interface{} {
 			"evolutions":   m.SchemaEvolutions.Load(),
 			"cache_hits":   m.SchemaCacheHits.Load(),
 			"cache_misses": m.SchemaCacheMisses.Load(),
+		},
+		"wal": map[string]interface{}{
+			"writes":          m.WALWrites.Load(),
+			"bytes":           m.WALBytes.Load(),
+			"write_errors":    m.WALWriteErrors.Load(),
+			"corruptions":     m.WALCorruptions.Load(),
+			"replay_success":  m.WALReplaySuccess.Load(),
+			"replay_failures": m.WALReplayFailures.Load(),
+			"duration_avg_us": walAvg.Microseconds(),
+			"duration_min_us": walMin.Microseconds(),
+			"duration_max_us": walMax.Microseconds(),
+			"duration_count":  walCount,
 		},
 		"pool": map[string]interface{}{
 			"acquire_count":   m.PoolAcquireCount.Load(),

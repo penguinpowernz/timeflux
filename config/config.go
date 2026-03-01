@@ -12,6 +12,7 @@ type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Database DatabaseConfig `yaml:"database"`
 	Logging  LoggingConfig  `yaml:"logging"`
+	WAL      WALConfig      `yaml:"wal"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -35,6 +36,17 @@ type DatabaseConfig struct {
 type LoggingConfig struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
+}
+
+// WALConfig holds write-ahead log configuration
+type WALConfig struct {
+	Enabled          bool   `yaml:"enabled"`
+	Path             string `yaml:"path"`
+	NumWorkers       int    `yaml:"num_workers"`
+	FsyncIntervalMs  int    `yaml:"fsync_interval_ms"`
+	SegmentSizeMB    int    `yaml:"segment_size_mb"`
+	SegmentCacheSize int    `yaml:"segment_cache_size"`
+	NoSync           bool   `yaml:"no_sync"` // disable fsync (for development/testing only)
 }
 
 // Load reads and parses the configuration file
@@ -70,6 +82,21 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Logging.Format == "" {
 		cfg.Logging.Format = "json"
+	}
+	if cfg.WAL.Path == "" {
+		cfg.WAL.Path = "/tmp/timeflux/wal"
+	}
+	if cfg.WAL.NumWorkers == 0 {
+		cfg.WAL.NumWorkers = 8
+	}
+	if cfg.WAL.FsyncIntervalMs == 0 {
+		cfg.WAL.FsyncIntervalMs = 100
+	}
+	if cfg.WAL.SegmentSizeMB == 0 {
+		cfg.WAL.SegmentSizeMB = 64
+	}
+	if cfg.WAL.SegmentCacheSize == 0 {
+		cfg.WAL.SegmentCacheSize = 2
 	}
 
 	return &cfg, nil
