@@ -3,12 +3,12 @@ package write
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/penguinpowernz/timeflux/metrics"
@@ -29,9 +29,9 @@ func NewHandler(pool *pgxpool.Pool, schemaManager *schema.SchemaManager) *Handle
 	}
 }
 
-// ServeHTTP handles HTTP requests to the write endpoint
+// Handle processes write requests using Gin context
 // POST /write?db={database}
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Handle(c *gin.Context) {
 	start := time.Now()
 	m := metrics.Global()
 	m.WriteRequests.Add(1)
@@ -40,23 +40,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.WriteDuration.Record(time.Since(start))
 	}()
 
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// Get database parameter
-	database := r.URL.Query().Get("db")
+	database := c.Query("db")
 	if database == "" {
-		http.Error(w, "database parameter required", http.StatusBadRequest)
+		c.String(http.StatusBadRequest, "database parameter required")
 		return
 	}
 
 	// Read request body
-	body, err := io.ReadAll(r.Body)
+	body, err := c.GetRawData()
 	if err != nil {
 		log.Printf("Error reading request body: %v", err)
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		c.String(http.StatusBadRequest, "Failed to read request body")
 		return
 	}
 
@@ -64,12 +59,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	points, err := ParseBatch(string(body))
 	if err != nil {
 		log.Printf("Error parsing line protocol: %v", err)
-		http.Error(w, fmt.Sprintf("Failed to parse line protocol: %v", err), http.StatusBadRequest)
+		c.String(http.StatusBadRequest, "Failed to parse line protocol: %v", err)
 		return
 	}
 
 	if len(points) == 0 {
-		w.WriteHeader(http.StatusNoContent)
+		c.Status(http.StatusNoContent)
 		return
 	}
 
@@ -80,20 +75,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Write each measurement batch with timeout
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
 	for measurement, measurementPoints := range pointsByMeasurement {
 		if err := h.writePoints(ctx, database, measurement, measurementPoints); err != nil {
 			log.Printf("Error writing points to %s.%s: %v", database, measurement, err)
 			m.WriteErrors.Add(1)
-			http.Error(w, fmt.Sprintf("Failed to write data: %v", err), http.StatusInternalServerError)
+			c.String(http.StatusInternalServerError, "Failed to write data: %v", err)
 			return
 		}
 		m.PointsWritten.Add(uint64(len(measurementPoints)))
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) writePoints(ctx context.Context, database, measurement string, points []*Point) error {

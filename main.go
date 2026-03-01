@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -12,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/penguinpowernz/timeflux/config"
 	"github.com/penguinpowernz/timeflux/metrics"
@@ -63,32 +63,38 @@ func main() {
 	writeHandler := write.NewHandler(pool, schemaManager)
 	queryHandler := query.NewHandler(pool)
 
-	// Setup HTTP routes
-	mux := http.NewServeMux()
-	mux.Handle("/write", writeHandler)
-	mux.Handle("/query", queryHandler)
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy"}`))
-	})
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
+	// Setup Gin router
+	if cfg.Logging.Level != "debug" {
+		gin.SetMode(gin.ReleaseMode)
+	}
 
-		snapshot := metrics.Global().Snapshot()
-		if err := json.NewEncoder(w).Encode(snapshot); err != nil {
-			log.Printf("Error encoding metrics: %v", err)
-		}
+	router := gin.New()
+
+	// Add middleware
+	router.Use(gin.Recovery())
+	router.Use(ginLogger())
+
+	// Setup routes
+	router.POST("/write", writeHandler.Handle)
+	router.GET("/query", queryHandler.Handle)
+	router.POST("/query", queryHandler.Handle)
+
+	router.GET("/ping", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "healthy"})
+	})
+
+	router.GET("/metrics", func(c *gin.Context) {
+		c.JSON(http.StatusOK, metrics.Global().Snapshot())
 	})
 
 	// Create HTTP server
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      loggingMiddleware(mux),
+		Handler:      router,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -120,27 +126,25 @@ func main() {
 	log.Printf("Server stopped")
 }
 
-// loggingMiddleware logs HTTP requests
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// ginLogger is a custom Gin logger middleware
+func ginLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
 		start := time.Now()
+		path := c.Request.URL.Path
+		query := c.Request.URL.RawQuery
 
-		// Wrap response writer to capture status code
-		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		// Process request
+		c.Next()
 
-		next.ServeHTTP(wrapped, r)
-
+		// Log after request
 		duration := time.Since(start)
-		log.Printf("%s %s %d %v", r.Method, r.URL.Path, wrapped.statusCode, duration)
-	})
-}
+		status := c.Writer.Status()
+		method := c.Request.Method
 
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
+		if query != "" {
+			path = path + "?" + query
+		}
 
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.statusCode = code
-	rw.ResponseWriter.WriteHeader(code)
+		log.Printf("%s %s %d %v", method, path, status, duration)
+	}
 }

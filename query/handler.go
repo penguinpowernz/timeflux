@@ -2,12 +2,12 @@ package query
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/penguinpowernz/timeflux/metrics"
 )
@@ -24,9 +24,9 @@ func NewHandler(pool *pgxpool.Pool) *Handler {
 	}
 }
 
-// ServeHTTP handles HTTP requests to the query endpoint
+// Handle processes query requests using Gin context
 // GET or POST /query?db={database}&q={query}
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Handle(c *gin.Context) {
 	start := time.Now()
 	m := metrics.Global()
 	m.QueryRequests.Add(1)
@@ -35,40 +35,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.QueryDuration.Record(time.Since(start))
 	}()
 
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		log.Printf("%s /query: Method not allowed: %s", r.Method, r.Method)
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// Get query parameter
-	query := r.URL.Query().Get("q")
+	query := c.Query("q")
 	// Get database parameter
-	database := r.URL.Query().Get("db")
+	database := c.Query("db")
 
-	log.Printf("%s /query: db=%s, query=%s", r.Method, database, query)
+	log.Printf("%s /query: db=%s, query=%s", c.Request.Method, database, query)
 
 	if database == "" {
-		log.Printf("%s /query: Missing database parameter", r.Method)
-		http.Error(w, "database parameter required", http.StatusBadRequest)
+		log.Printf("%s /query: Missing database parameter", c.Request.Method)
+		h.sendErrorResponse(c, "database parameter required")
 		return
 	}
 
 	if query == "" {
-		// Try to get from POST body
-		if r.Method == http.MethodPost {
-			if err := r.ParseForm(); err != nil {
-				log.Printf("%s /query: Failed to parse form: %v", r.Method, err)
-				http.Error(w, "Failed to parse form", http.StatusBadRequest)
-				return
-			}
-			query = r.FormValue("q")
+		// Try to get from POST form
+		if c.Request.Method == http.MethodPost {
+			query = c.PostForm("q")
 		}
 	}
 
 	if query == "" {
-		log.Printf("%s /query: Missing query parameter", r.Method)
-		http.Error(w, "query parameter required", http.StatusBadRequest)
+		log.Printf("%s /query: Missing query parameter", c.Request.Method)
+		h.sendErrorResponse(c, "query parameter required")
 		return
 	}
 
@@ -78,24 +67,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("Error translating query: %v", err)
 		m.QueryErrors.Add(1)
-		h.sendErrorResponse(w, fmt.Sprintf("Failed to translate query: %v", err))
+		h.sendErrorResponse(c, fmt.Sprintf("Failed to translate query: %v", err))
 		return
 	}
 
 	log.Printf("Translated query: %s", sql)
 
 	// Execute SQL query
-	ctx := r.Context()
+	ctx := c.Request.Context()
 	results, err := h.executeQuery(ctx, sql)
 	if err != nil {
 		log.Printf("Error executing query: %v", err)
 		m.QueryErrors.Add(1)
-		h.sendErrorResponse(w, fmt.Sprintf("Failed to execute query: %v", err))
+		h.sendErrorResponse(c, fmt.Sprintf("Failed to execute query: %v", err))
 		return
 	}
 
 	// Send response in InfluxDB format
-	h.sendSuccessResponse(w, results)
+	h.sendSuccessResponse(c, results)
 }
 
 func (h *Handler) executeQuery(ctx context.Context, sql string) (*QueryResult, error) {
@@ -134,7 +123,7 @@ func (h *Handler) executeQuery(ctx context.Context, sql string) (*QueryResult, e
 	return result, nil
 }
 
-func (h *Handler) sendSuccessResponse(w http.ResponseWriter, result *QueryResult) {
+func (h *Handler) sendSuccessResponse(c *gin.Context, result *QueryResult) {
 	response := InfluxDBResponse{
 		Results: []InfluxDBResult{
 			{
@@ -149,15 +138,10 @@ func (h *Handler) sendSuccessResponse(w http.ResponseWriter, result *QueryResult
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Error encoding response: %v", err)
-	}
+	c.JSON(http.StatusOK, response)
 }
 
-func (h *Handler) sendErrorResponse(w http.ResponseWriter, errMsg string) {
+func (h *Handler) sendErrorResponse(c *gin.Context, errMsg string) {
 	response := InfluxDBResponse{
 		Results: []InfluxDBResult{
 			{
@@ -167,12 +151,8 @@ func (h *Handler) sendErrorResponse(w http.ResponseWriter, errMsg string) {
 		},
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK) // InfluxDB returns 200 even for query errors
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Error encoding error response: %v", err)
-	}
+	// InfluxDB returns 200 even for query errors
+	c.JSON(http.StatusOK, response)
 }
 
 // QueryResult represents the result of a SQL query
