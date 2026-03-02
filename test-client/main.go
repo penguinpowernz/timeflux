@@ -101,6 +101,12 @@ func main() {
 	// Test 16: SHOW FIELD KEYS
 	suite.addTest(testShowFieldKeys(c))
 
+	// Test 17: CREATE DATABASE
+	suite.addTest(testCreateDatabase(c))
+
+	// Test 18: SHOW DATABASES
+	suite.addTest(testShowDatabases(c))
+
 	// Calculate summary
 	suite.Summary.Total = len(suite.Results)
 	suite.Summary.Duration = time.Since(startTime).String()
@@ -652,6 +658,71 @@ func testShowFieldKeys(c client.Client) TestResult {
 		}
 		result.Data = map[string]interface{}{
 			"field_keys": fieldKeys,
+		}
+	}
+	return result
+}
+
+func testCreateDatabase(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "CreateDatabase",
+		Description: "CREATE DATABASE",
+	}
+
+	q := client.NewQuery("CREATE DATABASE test_created_db", "", "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{
+		"database": "test_created_db",
+	}
+	return result
+}
+
+func testShowDatabases(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "ShowDatabases",
+		Description: "SHOW DATABASES",
+	}
+
+	q := client.NewQuery("SHOW DATABASES", "", "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		databases := []string{}
+		for _, val := range response.Results[0].Series[0].Values {
+			if len(val) > 0 {
+				databases = append(databases, val[0].(string))
+			}
+		}
+		result.Data = map[string]interface{}{
+			"databases": databases,
+			"count":     len(databases),
 		}
 	}
 	return result

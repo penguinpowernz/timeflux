@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -37,17 +38,6 @@ func (h *Handler) Handle(c *gin.Context) {
 
 	// Get query parameter
 	query := c.Query("q")
-	// Get database parameter
-	database := c.Query("db")
-
-	log.Printf("%s /query: db=%s, query=%s", c.Request.Method, database, query)
-
-	if database == "" {
-		log.Printf("%s /query: Missing database parameter", c.Request.Method)
-		h.sendErrorResponse(c, "database parameter required")
-		return
-	}
-
 	if query == "" {
 		// Try to get from POST form
 		if c.Request.Method == http.MethodPost {
@@ -58,6 +48,18 @@ func (h *Handler) Handle(c *gin.Context) {
 	if query == "" {
 		log.Printf("%s /query: Missing query parameter", c.Request.Method)
 		h.sendErrorResponse(c, "query parameter required")
+		return
+	}
+
+	// Get database parameter (optional for some queries)
+	database := c.Query("db")
+
+	log.Printf("%s /query: db=%s, query=%s", c.Request.Method, database, query)
+
+	// Check if database is required for this query
+	if database == "" && !isSystemQuery(query) {
+		log.Printf("%s /query: Missing database parameter for non-system query", c.Request.Method)
+		h.sendErrorResponse(c, "database parameter required")
 		return
 	}
 
@@ -85,6 +87,27 @@ func (h *Handler) Handle(c *gin.Context) {
 
 	// Send response in InfluxDB format
 	h.sendSuccessResponse(c, results)
+}
+
+// isSystemQuery checks if a query can run without a database parameter
+func isSystemQuery(query string) bool {
+	// Normalize query to uppercase for comparison
+	upperQuery := strings.ToUpper(strings.TrimSpace(query))
+
+	// Queries that don't require a database parameter
+	systemQueries := []string{
+		"SHOW DATABASES",
+		"CREATE DATABASE",
+		"DROP DATABASE",
+	}
+
+	for _, sysQuery := range systemQueries {
+		if strings.HasPrefix(upperQuery, sysQuery) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (h *Handler) executeQuery(ctx context.Context, sql string) (*QueryResult, error) {

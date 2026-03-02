@@ -47,6 +47,10 @@ func (t *Translator) Translate(query string) (string, error) {
 		return t.translateShowTagValues(s)
 	case *influxql.ShowFieldKeysStatement:
 		return t.translateShowFieldKeys(s)
+	case *influxql.ShowDatabasesStatement:
+		return t.translateShowDatabases(s)
+	case *influxql.CreateDatabaseStatement:
+		return t.translateCreateDatabase(s)
 	default:
 		return "", fmt.Errorf("unsupported statement type: %T", stmt)
 	}
@@ -518,5 +522,24 @@ func (t *Translator) translateShowFieldKeys(stmt *influxql.ShowFieldKeysStatemen
 
 	sql.WriteString(" ORDER BY fieldKey")
 	return sql.String(), nil
+}
+
+func (t *Translator) translateShowDatabases(stmt *influxql.ShowDatabasesStatement) (string, error) {
+	// Query PostgreSQL schemas (excluding system schemas)
+	return `
+		SELECT nspname AS name
+		FROM pg_namespace
+		WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'timescaledb_information', 'timescaledb_experimental')
+		  AND nspname NOT LIKE 'pg_temp_%'
+		  AND nspname NOT LIKE 'pg_toast_temp_%'
+		  AND nspname NOT LIKE '_timescaledb_%'
+		ORDER BY name
+	`, nil
+}
+
+func (t *Translator) translateCreateDatabase(stmt *influxql.CreateDatabaseStatement) (string, error) {
+	// Sanitize the database name
+	dbName := pgx.Identifier{stmt.Name}.Sanitize()
+	return fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", dbName), nil
 }
 

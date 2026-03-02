@@ -60,7 +60,7 @@ func main() {
 	}
 
 	// Create HTTP handlers
-	writeHandler := write.NewHandler(pool, schemaManager)
+	writeHandler := write.NewHandler(pool, schemaManager, cfg.Database.AutoCreateDatabases)
 	queryHandler := query.NewHandler(pool)
 
 	// Initialize WAL if enabled

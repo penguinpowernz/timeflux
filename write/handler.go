@@ -18,17 +18,19 @@ import (
 
 // Handler handles InfluxDB write requests
 type Handler struct {
-	pool          *pgxpool.Pool
-	schemaManager *schema.SchemaManager
-	walBuffer     *WALBuffer // optional, nil if WAL disabled
+	pool                *pgxpool.Pool
+	schemaManager       *schema.SchemaManager
+	walBuffer           *WALBuffer // optional, nil if WAL disabled
+	autoCreateDatabases bool
 }
 
 // NewHandler creates a new write handler
-func NewHandler(pool *pgxpool.Pool, schemaManager *schema.SchemaManager) *Handler {
+func NewHandler(pool *pgxpool.Pool, schemaManager *schema.SchemaManager, autoCreateDatabases bool) *Handler {
 	return &Handler{
-		pool:          pool,
-		schemaManager: schemaManager,
-		walBuffer:     nil, // set by SetWALBuffer if enabled
+		pool:                pool,
+		schemaManager:       schemaManager,
+		walBuffer:           nil, // set by SetWALBuffer if enabled
+		autoCreateDatabases: autoCreateDatabases,
 	}
 }
 
@@ -53,6 +55,15 @@ func (h *Handler) Handle(c *gin.Context) {
 	if database == "" {
 		c.String(http.StatusBadRequest, "database parameter required")
 		return
+	}
+
+	// Auto-create database if enabled
+	if h.autoCreateDatabases {
+		if err := h.ensureDatabaseExists(c.Request.Context(), database); err != nil {
+			log.Printf("Error ensuring database exists: %v", err)
+			c.String(http.StatusInternalServerError, "Failed to create database: %v", err)
+			return
+		}
 	}
 
 	// Read request body
@@ -276,6 +287,36 @@ func resolveFieldType(type1, type2 string) string {
 		return type1
 	}
 	return type2
+}
+
+// ensureDatabaseExists creates the PostgreSQL schema if it doesn't exist
+func (h *Handler) ensureDatabaseExists(ctx context.Context, database string) error {
+	// Check if schema already exists
+	var exists bool
+	err := h.pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM information_schema.schemata WHERE schema_name = $1
+		)
+	`, database).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("failed to check schema existence: %w", err)
+	}
+
+	if exists {
+		return nil
+	}
+
+	// Create schema
+	_, err = h.pool.Exec(ctx, fmt.Sprintf("CREATE SCHEMA %s", pgx.Identifier{database}.Sanitize()))
+	if err != nil {
+		// Ignore "already exists" error in case of race condition
+		if !strings.Contains(err.Error(), "already exists") {
+			return fmt.Errorf("failed to create schema: %w", err)
+		}
+	}
+
+	log.Printf("Auto-created database (schema): %s", database)
+	return nil
 }
 
 func (h *Handler) insertPointsBatch(ctx context.Context, database, measurement string, points []*Point, columns []string) error {

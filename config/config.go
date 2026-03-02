@@ -22,14 +22,15 @@ type ServerConfig struct {
 
 // DatabaseConfig holds PostgreSQL/TimescaleDB connection configuration
 type DatabaseConfig struct {
-	Host            string `yaml:"host"`
-	Port            int    `yaml:"port"`
-	Database        string `yaml:"database"`
-	User            string `yaml:"user"`
-	Password        string `yaml:"password"`
-	PoolSize        int    `yaml:"pool_size"`
-	MaxConnLifetime int    `yaml:"max_conn_lifetime"` // in seconds
-	MaxConnIdleTime int    `yaml:"max_conn_idle_time"` // in seconds
+	Host               string `yaml:"host"`
+	Port               int    `yaml:"port"`
+	Database           string `yaml:"database"`
+	User               string `yaml:"user"`
+	Password           string `yaml:"password"`
+	PoolSize           int    `yaml:"pool_size"`
+	MaxConnLifetime    int    `yaml:"max_conn_lifetime"`    // in seconds
+	MaxConnIdleTime    int    `yaml:"max_conn_idle_time"`    // in seconds
+	AutoCreateDatabases bool   `yaml:"auto_create_databases"` // auto-create schemas when writing to non-existent databases
 }
 
 // LoggingConfig holds logging configuration
