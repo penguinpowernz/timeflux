@@ -63,8 +63,8 @@ func NewWALBuffer(cfg WALConfig, pool *pgxpool.Pool, schemaManager *schema.Schem
 		fsyncTicker:   time.NewTicker(time.Duration(cfg.FsyncIntervalMs) * time.Millisecond),
 	}
 
-	// Create write handler for workers to use
-	writeHandler := NewHandler(pool, schemaManager)
+	// Create write handler for workers to use (auto-create disabled in WAL workers, will be handled by main write path)
+	writeHandler := NewHandler(pool, schemaManager, false)
 
 	// Start worker pool
 	wb.workers = make([]*WALWorker, cfg.NumWorkers)
