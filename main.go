@@ -8,15 +8,18 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/penguinpowernz/timeflux/auth"
 	"github.com/penguinpowernz/timeflux/config"
 	"github.com/penguinpowernz/timeflux/metrics"
 	"github.com/penguinpowernz/timeflux/query"
 	"github.com/penguinpowernz/timeflux/schema"
+	"github.com/penguinpowernz/timeflux/usercli"
 	"github.com/penguinpowernz/timeflux/write"
 )
 
@@ -29,6 +32,14 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Check if this is a user management command
+	if len(flag.Args()) > 0 {
+		if err := handleUserCommand(cfg, flag.Args()); err != nil {
+			log.Fatalf("Command failed: %v", err)
+		}
+		return
 	}
 
 	log.Printf("Starting Timeflux - InfluxDB v1 to TimescaleDB facade")
@@ -57,6 +68,19 @@ func main() {
 		log.Printf("Warning: failed to load existing schemas: %v", err)
 	} else {
 		log.Printf("Existing schemas loaded successfully")
+	}
+
+	// Initialize authentication system
+	var userManager *auth.UserManager
+	if cfg.Auth.Enabled {
+		log.Printf("Initializing authentication system...")
+		userManager = auth.NewUserManager(pool)
+		if err := userManager.InitializeSchema(ctx); err != nil {
+			log.Fatalf("Failed to initialize auth schema: %v", err)
+		}
+		log.Printf("Authentication enabled")
+	} else {
+		log.Printf("Authentication disabled")
 	}
 
 	// Create HTTP handlers
@@ -105,10 +129,15 @@ func main() {
 	router.Use(gin.Recovery())
 	router.Use(ginLogger())
 
-	// Setup routes
-	router.POST("/write", writeHandler.Handle)
-	router.GET("/query", queryHandler.Handle)
-	router.POST("/query", queryHandler.Handle)
+	// Add authentication middleware if enabled
+	if cfg.Auth.Enabled {
+		router.Use(auth.Middleware(userManager, true))
+	}
+
+	// Setup routes with authorization
+	router.POST("/write", auth.RequirePermission(userManager, cfg.Auth.Enabled, true), writeHandler.Handle)
+	router.GET("/query", auth.RequirePermission(userManager, cfg.Auth.Enabled, false), queryHandler.Handle)
+	router.POST("/query", auth.RequirePermission(userManager, cfg.Auth.Enabled, false), queryHandler.Handle)
 
 	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"version": "timeflux (CLI not supported)"})
@@ -189,5 +218,85 @@ func ginLogger() gin.HandlerFunc {
 		}
 
 		log.Printf("%s %s %d %v", method, path, status, duration)
+	}
+}
+
+// handleUserCommand processes user management commands
+func handleUserCommand(cfg *config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("no command specified")
+	}
+
+	userCmd := usercli.NewUserCommand(cfg)
+
+	switch args[0] {
+	case "user:add":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: user:add <username> [password]")
+		}
+		username := args[1]
+		password := ""
+		if len(args) >= 3 {
+			password = args[2]
+		}
+		return userCmd.AddUser(username, password)
+
+	case "user:delete":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: user:delete <username>")
+		}
+		return userCmd.DeleteUser(args[1])
+
+	case "user:reset-password":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: user:reset-password <username> [new-password]")
+		}
+		username := args[1]
+		password := ""
+		if len(args) >= 3 {
+			password = args[2]
+		}
+		return userCmd.ResetPassword(username, password)
+
+	case "user:grant":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: user:grant <username> <database[.measurement]:r|w|rw>")
+		}
+		username := args[1]
+		database, measurement, canRead, canWrite, err := usercli.ParsePermission(args[2])
+		if err != nil {
+			return err
+		}
+		return userCmd.GrantPermission(username, database, measurement, canRead, canWrite)
+
+	case "user:revoke":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: user:revoke <username> <database[.measurement]>")
+		}
+		username := args[1]
+		target := args[2]
+		database := target
+		measurement := ""
+		if strings.Contains(target, ".") {
+			parts := strings.SplitN(target, ".", 2)
+			database = parts[0]
+			measurement = parts[1]
+			if measurement == "*" {
+				measurement = ""
+			}
+		}
+		return userCmd.RevokePermission(username, database, measurement)
+
+	case "user:list":
+		return userCmd.ListUsers()
+
+	case "user:show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: user:show <username>")
+		}
+		return userCmd.ShowUser(args[1])
+
+	default:
+		return fmt.Errorf("unknown command: %s\nAvailable commands:\n  user:add <username> [password]\n  user:delete <username>\n  user:reset-password <username> [new-password]\n  user:grant <username> <database[.measurement]:r|w|rw>\n  user:grant <username> *[.measurement]:r|w|rw  (wildcard for all databases)\n  user:revoke <username> <database[.measurement]>\n  user:list\n  user:show <username>", args[0])
 	}
 }

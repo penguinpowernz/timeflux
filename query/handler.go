@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/penguinpowernz/timeflux/auth"
 	"github.com/penguinpowernz/timeflux/metrics"
 )
 
@@ -55,6 +56,14 @@ func (h *Handler) Handle(c *gin.Context) {
 	database := c.Query("db")
 
 	log.Printf("%s /query: db=%s, query=%s", c.Request.Method, database, query)
+
+	// Prevent access to auth tables
+	if auth.IsAuthTableQuery(query) {
+		log.Printf("Attempt to query auth tables blocked: %s", query)
+		m.QueryErrors.Add(1)
+		h.sendErrorResponse(c, "Access to authentication tables is forbidden")
+		return
+	}
 
 	// Check if database is required for this query
 	if database == "" && !isSystemQuery(query) {

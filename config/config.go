@@ -14,6 +14,7 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	Logging  LoggingConfig  `yaml:"logging"`
 	WAL      WALConfig      `yaml:"wal"`
+	Auth     AuthConfig     `yaml:"auth"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -49,6 +50,11 @@ type WALConfig struct {
 	SegmentSizeMB    int    `yaml:"segment_size_mb"`
 	SegmentCacheSize int    `yaml:"segment_cache_size"`
 	NoSync           bool   `yaml:"no_sync"` // disable fsync (for development/testing only)
+}
+
+// AuthConfig holds authentication configuration
+type AuthConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // Load reads and parses the configuration file
