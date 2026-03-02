@@ -276,10 +276,22 @@ func (t *Translator) translateCall(call *influxql.Call) string {
 	case "percentile":
 		if len(call.Args) >= 2 {
 			// Args: [field, percentile_value]
-			// PostgreSQL percentile_cont expects a fraction (0.0-1.0), not 0-100
+			// PostgreSQL percentile_cont expects a fraction (0.0-1.0)
+			// InfluxDB percentile can be either 0-100 or 0.0-1.0
 			percentileExpr := t.translateExpr(call.Args[1])
-			// If it's a number literal > 1, divide by 100
-			return fmt.Sprintf("percentile_cont(%s / 100.0) WITHIN GROUP (ORDER BY %s)",
+
+			// Check if it's a number literal > 1 (likely 0-100 scale)
+			if numLit, ok := call.Args[1].(*influxql.NumberLiteral); ok {
+				if numLit.Val > 1.0 {
+					// Convert from 0-100 to 0.0-1.0
+					return fmt.Sprintf("percentile_cont(%g) WITHIN GROUP (ORDER BY %s)",
+						numLit.Val/100.0,
+						t.translateExpr(call.Args[0]))
+				}
+			}
+
+			// Already a fraction, use as-is
+			return fmt.Sprintf("percentile_cont(%s) WITHIN GROUP (ORDER BY %s)",
 				percentileExpr,
 				t.translateExpr(call.Args[0]))
 		}
@@ -373,6 +385,11 @@ func (t *Translator) durationToInterval(duration string) string {
 	// Remove quotes if present
 	duration = strings.Trim(duration, "'\"")
 
+	// Validate minimum length
+	if len(duration) == 0 {
+		return "1 minute" // safe default
+	}
+
 	// DurationLiteral.String() returns formats like "5m0s", "2h0m0s", etc.
 	// We need to parse this and convert to PostgreSQL interval format
 
@@ -388,8 +405,9 @@ func (t *Translator) durationToInterval(duration string) string {
 	// Common InfluxDB duration formats: 1s, 5m, 1h, 1d, 1w
 	if len(duration) >= 2 && !strings.Contains(duration, " ") {
 		value := duration[:len(duration)-1]
-		unit := duration[len(duration)-1:]
+		unit := string(duration[len(duration)-1])
 
+		// Validate unit is a single character
 		switch unit {
 		case "s":
 			return value + " seconds"
@@ -402,12 +420,12 @@ func (t *Translator) durationToInterval(duration string) string {
 		case "w":
 			return value + " weeks"
 		default:
-			// If it doesn't match simple pattern, return as-is
-			return duration
+			// If it doesn't match simple pattern, return safe default
+			return "1 minute"
 		}
 	}
 
-	return duration
+	return "1 minute" // safe default
 }
 
 func (t *Translator) hasTimeBucket(dimensions influxql.Dimensions) bool {
@@ -462,7 +480,10 @@ func (t *Translator) translateShowTagKeys(stmt *influxql.ShowTagKeysStatement) (
 		if err != nil {
 			return "", err
 		}
-		sql.WriteString(fmt.Sprintf(" AND measurement = '%s'", strings.ReplaceAll(measurement, "'", "''")))
+		// Use parameterized query would require query execution changes,
+		// so properly escape the string literal instead
+		escapedMeasurement := strings.ReplaceAll(measurement, "'", "''")
+		sql.WriteString(fmt.Sprintf(" AND measurement = '%s'", escapedMeasurement))
 	}
 
 	sql.WriteString(" ORDER BY tagKey")
@@ -525,7 +546,8 @@ func (t *Translator) translateShowFieldKeys(stmt *influxql.ShowFieldKeysStatemen
 		if err != nil {
 			return "", err
 		}
-		sql.WriteString(fmt.Sprintf(" AND measurement = '%s'", strings.ReplaceAll(measurement, "'", "''")))
+		escapedMeasurement := strings.ReplaceAll(measurement, "'", "''")
+		sql.WriteString(fmt.Sprintf(" AND measurement = '%s'", escapedMeasurement))
 	}
 
 	sql.WriteString(" ORDER BY fieldKey")
@@ -567,29 +589,24 @@ func (t *Translator) translateShowSeries(stmt *influxql.ShowSeriesStatement) (st
 	// Query to get distinct tag combinations (series)
 	// A series in InfluxDB is a unique combination of measurement + tag set
 	if measurement != "" {
-		// Get tag columns for this measurement
-		tableName := pgx.Identifier{t.database, measurement}.Sanitize()
+		// Simplified query that gets tag key-value pairs for the measurement
+		// This avoids the invalid pg_get_expr usage
+		escapedMeasurement := strings.ReplaceAll(measurement, "'", "''")
 		sql.WriteString(fmt.Sprintf(`
-			SELECT DISTINCT
-				'%s' || ',' || string_agg(column_name || '=' || COALESCE(pg_catalog.pg_get_expr(adbin, adrelid), ''), ',' ORDER BY column_name) AS key
+			SELECT DISTINCT column_name AS key
 			FROM %s
-			CROSS JOIN (
-				SELECT column_name
-				FROM %s._timeflux_metadata
-				WHERE measurement = '%s' AND is_tag = true
-				ORDER BY column_name
-			) tags
-			GROUP BY time
+			WHERE measurement = '%s' AND is_tag = true
+			ORDER BY column_name
 			LIMIT 100
-		`, measurement, tableName, pgx.Identifier{t.database}.Sanitize(), measurement))
+		`, pgx.Identifier{t.database, "_timeflux_metadata"}.Sanitize(), escapedMeasurement))
 	} else {
 		// Show series across all measurements
 		sql.WriteString(fmt.Sprintf(`
 			SELECT measurement || ',' || column_name AS key
-			FROM %s._timeflux_metadata
+			FROM %s
 			WHERE is_tag = true
 			ORDER BY measurement, column_name
-		`, pgx.Identifier{t.database}.Sanitize()))
+		`, pgx.Identifier{t.database, "_timeflux_metadata"}.Sanitize()))
 	}
 
 	return sql.String(), nil

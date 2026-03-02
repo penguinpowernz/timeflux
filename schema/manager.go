@@ -118,13 +118,15 @@ func (sm *SchemaManager) loadAllSchemas(ctx context.Context, databases []string)
 		return nil
 	}
 
-	// Build schema list for WHERE clause
-	schemaList := make([]string, len(databases))
+	// Build parameterized query with placeholders
+	placeholders := make([]string, len(databases))
+	args := make([]interface{}, len(databases))
 	for i, db := range databases {
-		schemaList[i] = "'" + strings.ReplaceAll(db, "'", "''") + "'"
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = db
 	}
 
-	// Query all columns for all schemas at once
+	// Query all columns for all schemas at once using parameterized query
 	query := fmt.Sprintf(`
 		SELECT
 			table_schema,
@@ -132,19 +134,19 @@ func (sm *SchemaManager) loadAllSchemas(ctx context.Context, databases []string)
 			column_name,
 			data_type
 		FROM information_schema.columns
-		WHERE table_schema IN (%s)
+		WHERE table_schema = ANY($1::text[])
 			AND table_name != '_timeflux_metadata'
 		ORDER BY table_schema, table_name, ordinal_position
-	`, strings.Join(schemaList, ", "))
+	`)
 
-	rows, err := sm.pool.Query(ctx, query)
+	rows, err := sm.pool.Query(ctx, query, databases)
 	if err != nil {
 		return fmt.Errorf("failed to query columns: %w", err)
 	}
 	defer rows.Close()
 
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	// Build schema map without holding the write lock
+	tempSchemas := make(map[string]map[string]*MeasurementSchema)
 
 	for rows.Next() {
 		var schemaName, tableName, columnName, dataType string
@@ -156,11 +158,11 @@ func (sm *SchemaManager) loadAllSchemas(ctx context.Context, databases []string)
 			continue // Skip the time column
 		}
 
-		if sm.schemas[schemaName] == nil {
-			sm.schemas[schemaName] = make(map[string]*MeasurementSchema)
+		if tempSchemas[schemaName] == nil {
+			tempSchemas[schemaName] = make(map[string]*MeasurementSchema)
 		}
-		if sm.schemas[schemaName][tableName] == nil {
-			sm.schemas[schemaName][tableName] = &MeasurementSchema{
+		if tempSchemas[schemaName][tableName] == nil {
+			tempSchemas[schemaName][tableName] = &MeasurementSchema{
 				Tags:   make(map[string]bool),
 				Fields: make(map[string]string),
 			}
@@ -169,15 +171,33 @@ func (sm *SchemaManager) loadAllSchemas(ctx context.Context, databases []string)
 		// Heuristic: TEXT columns are likely tags
 		sqlType := postgresTypeToSQL(dataType)
 		if sqlType == "TEXT" {
-			sm.schemas[schemaName][tableName].Tags[columnName] = true
+			tempSchemas[schemaName][tableName].Tags[columnName] = true
 		} else {
-			sm.schemas[schemaName][tableName].Fields[columnName] = sqlType
+			tempSchemas[schemaName][tableName].Fields[columnName] = sqlType
 		}
 	}
 
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("row iteration error: %w", err)
+	}
+
+	// Now update the schema map with write lock
+	sm.mu.Lock()
+	for schemaName, measurements := range tempSchemas {
+		if sm.schemas[schemaName] == nil {
+			sm.schemas[schemaName] = make(map[string]*MeasurementSchema)
+		}
+		for tableName, schema := range measurements {
+			sm.schemas[schemaName][tableName] = schema
+		}
+	}
+	sm.mu.Unlock()
+
 	// Load metadata for all databases
 	for _, database := range databases {
-		sm.loadMetadata(ctx, database)
+		if err := sm.loadMetadata(ctx, database); err != nil {
+			log.Printf("Warning: failed to load metadata for database %s: %v", database, err)
+		}
 	}
 
 	return nil
@@ -200,12 +220,8 @@ func (sm *SchemaManager) loadSchemaForDatabase(ctx context.Context, database str
 	}
 	defer rows.Close()
 
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	if sm.schemas[database] == nil {
-		sm.schemas[database] = make(map[string]*MeasurementSchema)
-	}
+	// Build schema map without holding the write lock
+	tempMeasurements := make(map[string]*MeasurementSchema)
 
 	for rows.Next() {
 		var tableName, columnName, dataType string
@@ -217,8 +233,8 @@ func (sm *SchemaManager) loadSchemaForDatabase(ctx context.Context, database str
 			continue // Skip the time column
 		}
 
-		if sm.schemas[database][tableName] == nil {
-			sm.schemas[database][tableName] = &MeasurementSchema{
+		if tempMeasurements[tableName] == nil {
+			tempMeasurements[tableName] = &MeasurementSchema{
 				Tags:   make(map[string]bool),
 				Fields: make(map[string]string),
 			}
@@ -229,27 +245,41 @@ func (sm *SchemaManager) loadSchemaForDatabase(ctx context.Context, database str
 		sqlType := postgresTypeToSQL(dataType)
 		if sqlType == "TEXT" {
 			// Could be tag or field - check metadata table if it exists
-			sm.schemas[database][tableName].Tags[columnName] = true
+			tempMeasurements[tableName].Tags[columnName] = true
 		} else {
-			sm.schemas[database][tableName].Fields[columnName] = sqlType
+			tempMeasurements[tableName].Fields[columnName] = sqlType
 		}
 	}
 
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("row iteration error: %w", err)
+	}
+
+	// Now update the schema map with write lock
+	sm.mu.Lock()
+	if sm.schemas[database] == nil {
+		sm.schemas[database] = make(map[string]*MeasurementSchema)
+	}
+	for tableName, schema := range tempMeasurements {
+		sm.schemas[database][tableName] = schema
+	}
+	sm.mu.Unlock()
+
 	// Load actual tag/field distinctions from metadata table if it exists
-	sm.loadMetadata(ctx, database)
+	if err := sm.loadMetadata(ctx, database); err != nil {
+		log.Printf("Warning: failed to load metadata for database %s: %v", database, err)
+	}
 
 	return nil
 }
 
-func (sm *SchemaManager) loadMetadata(ctx context.Context, database string) {
-	rows, err := sm.pool.Query(ctx,
-		fmt.Sprintf(`
-			SELECT measurement, column_name, column_type, is_tag
-			FROM %s._timeflux_metadata
-		`, pgx.Identifier{database}.Sanitize()))
+func (sm *SchemaManager) loadMetadata(ctx context.Context, database string) error {
+	rows, err := sm.pool.Query(ctx, `
+		SELECT measurement, column_name, column_type, is_tag
+		FROM `+pgx.Identifier{database, "_timeflux_metadata"}.Sanitize())
 	if err != nil {
 		// Metadata table doesn't exist yet
-		return
+		return nil
 	}
 	defer rows.Close()
 
@@ -257,7 +287,7 @@ func (sm *SchemaManager) loadMetadata(ctx context.Context, database string) {
 		var measurement, columnName, columnType string
 		var isTag bool
 		if err := rows.Scan(&measurement, &columnName, &columnType, &isTag); err != nil {
-			continue
+			return fmt.Errorf("failed to scan metadata row: %w", err)
 		}
 
 		if sm.schemas[database][measurement] == nil {
@@ -275,6 +305,8 @@ func (sm *SchemaManager) loadMetadata(ctx context.Context, database string) {
 			delete(sm.schemas[database][measurement].Tags, columnName)
 		}
 	}
+
+	return rows.Err()
 }
 
 // EnsureSchema ensures the schema exists for the given measurement with the specified tags and fields
@@ -487,10 +519,13 @@ func (sm *SchemaManager) ensureTable(ctx context.Context, database, measurement 
 		SELECT create_hypertable('%s', 'time', if_not_exists => TRUE)
 	`, strings.ReplaceAll(tableName, `"`, ``)))
 	if err != nil {
-		// Ignore error if already a hypertable
-		if !strings.Contains(err.Error(), "already a hypertable") {
-			log.Printf("Warning: failed to create hypertable for %s.%s: %v", database, measurement, err)
+		// Check for specific error codes
+		errStr := err.Error()
+		if !strings.Contains(errStr, "already a hypertable") &&
+			!strings.Contains(errStr, "TS110") { // TimescaleDB error code for already a hypertable
+			return fmt.Errorf("failed to create hypertable for %s.%s: %w", database, measurement, err)
 		}
+		// Hypertable already exists, continue
 	}
 
 	return nil

@@ -23,6 +23,8 @@ type WALBuffer struct {
 	stopCh        chan struct{}
 	fsyncTicker   *time.Ticker
 	mu            sync.Mutex
+	nextIndex     uint64 // shared read position for workers (protected by indexMu)
+	indexMu       sync.Mutex
 }
 
 // WALConfig holds configuration for the WAL buffer
@@ -55,12 +57,20 @@ func NewWALBuffer(cfg WALConfig, pool *pgxpool.Pool, schemaManager *schema.Schem
 		return nil, fmt.Errorf("failed to open WAL: %w", err)
 	}
 
+	// Get the first index to initialize nextIndex
+	firstIndex, err := walLog.FirstIndex()
+	if err != nil {
+		walLog.Close()
+		return nil, fmt.Errorf("failed to get first index: %w", err)
+	}
+
 	wb := &WALBuffer{
 		wal:           walLog,
 		pool:          pool,
 		schemaManager: schemaManager,
 		stopCh:        make(chan struct{}),
 		fsyncTicker:   time.NewTicker(time.Duration(cfg.FsyncIntervalMs) * time.Millisecond),
+		nextIndex:     firstIndex,
 	}
 
 	// Create write handler for workers to use (auto-create disabled in WAL workers, will be handled by main write path)
@@ -138,22 +148,6 @@ func (w *WALWorker) run() {
 
 	log.Printf("WAL worker %d started", w.id)
 
-	// Each worker maintains its own read position
-	firstIndex, err := w.walBuffer.wal.FirstIndex()
-	if err != nil {
-		log.Printf("WAL worker %d: failed to get first index: %v", w.id, err)
-		return
-	}
-
-	lastIndex, err := w.walBuffer.wal.LastIndex()
-	if err != nil {
-		log.Printf("WAL worker %d: failed to get last index: %v", w.id, err)
-		return
-	}
-
-	// Start reading from first available index
-	currentIndex := firstIndex
-
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -163,31 +157,35 @@ func (w *WALWorker) run() {
 			log.Printf("WAL worker %d stopping", w.id)
 			return
 		case <-ticker.C:
+			// Get next entry to process atomically
+			w.walBuffer.indexMu.Lock()
+			currentIndex := w.walBuffer.nextIndex
+
 			// Check if there are new entries
-			lastIndex, err = w.walBuffer.wal.LastIndex()
+			lastIndex, err := w.walBuffer.wal.LastIndex()
 			if err != nil {
+				w.walBuffer.indexMu.Unlock()
 				log.Printf("WAL worker %d: failed to get last index: %v", w.id, err)
 				continue
 			}
 
-			// Process entries up to lastIndex
-			for currentIndex <= lastIndex {
-				if err := w.processEntry(currentIndex); err != nil {
-					log.Printf("WAL worker %d: failed to process entry %d: %v", w.id, currentIndex, err)
-					// Skip corrupted entry and continue
-					metrics.Global().WALReplayFailures.Add(1)
-				} else {
-					metrics.Global().WALReplaySuccess.Add(1)
-				}
+			// If no new entries, unlock and continue
+			if currentIndex > lastIndex {
+				w.walBuffer.indexMu.Unlock()
+				continue
+			}
 
-				currentIndex++
+			// Claim this index by incrementing nextIndex
+			w.walBuffer.nextIndex++
+			w.walBuffer.indexMu.Unlock()
 
-				// Check if we should stop
-				select {
-				case <-w.walBuffer.stopCh:
-					return
-				default:
-				}
+			// Process the entry (outside of lock)
+			if err := w.processEntry(currentIndex); err != nil {
+				log.Printf("WAL worker %d: failed to process entry %d: %v", w.id, currentIndex, err)
+				// Skip corrupted entry and continue
+				metrics.Global().WALReplayFailures.Add(1)
+			} else {
+				metrics.Global().WALReplaySuccess.Add(1)
 			}
 		}
 	}
@@ -233,6 +231,13 @@ func (w *WALWorker) processEntry(index uint64) error {
 	defer cancel()
 
 	for measurement, measurementPoints := range pointsByMeasurement {
+		// Check if context is cancelled before processing
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled: %w", ctx.Err())
+		default:
+		}
+
 		if err := w.writeHandler.writePoints(ctx, entry.Database, measurement, measurementPoints); err != nil {
 			return fmt.Errorf("failed to write points for %s.%s: %w", entry.Database, measurement, err)
 		}

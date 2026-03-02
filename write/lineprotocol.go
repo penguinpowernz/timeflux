@@ -102,6 +102,8 @@ func splitLineProtocol(line string) []string {
 		ch := line[i]
 
 		if escaped {
+			// Preserve the backslash for proper escaping
+			current.WriteByte('\\')
 			current.WriteByte(ch)
 			escaped = false
 			continue
@@ -127,6 +129,11 @@ func splitLineProtocol(line string) []string {
 		}
 
 		current.WriteByte(ch)
+	}
+
+	// Handle trailing escape at end of line
+	if escaped {
+		current.WriteByte('\\')
 	}
 
 	if current.Len() > 0 {

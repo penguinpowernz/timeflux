@@ -61,6 +61,10 @@ func Global() *Metrics {
 
 // RecordDuration records a duration measurement
 func (d *DurationStats) Record(duration time.Duration) {
+	if d == nil {
+		return
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -77,6 +81,10 @@ func (d *DurationStats) Record(duration time.Duration) {
 
 // Stats returns current statistics
 func (d *DurationStats) Stats() (avg, min, max time.Duration, count uint64) {
+	if d == nil {
+		return 0, 0, 0, 0
+	}
+
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 

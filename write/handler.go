@@ -113,7 +113,8 @@ func (h *Handler) Handle(c *gin.Context) {
 
 	// Parallelize writes across measurements
 	var wg sync.WaitGroup
-	errCh := make(chan error, len(pointsByMeasurement))
+	var firstErr error
+	var errMu sync.Mutex
 
 	for measurement, measurementPoints := range pointsByMeasurement {
 		wg.Add(1)
@@ -121,12 +122,11 @@ func (h *Handler) Handle(c *gin.Context) {
 			defer wg.Done()
 			if err := h.writePoints(ctx, database, meas, pts); err != nil {
 				log.Printf("Error writing points to %s.%s: %v", database, meas, err)
-				select {
-				case errCh <- err:
-				default:
-					// Error channel full, log it
-					log.Printf("Additional error (channel full): %v", err)
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
 				}
+				errMu.Unlock()
 			} else {
 				m.PointsWritten.Add(uint64(len(pts)))
 			}
@@ -134,18 +134,12 @@ func (h *Handler) Handle(c *gin.Context) {
 	}
 
 	wg.Wait()
-	close(errCh)
 
-	// Check for errors - read first error if any
-	select {
-	case err := <-errCh:
-		if err != nil {
-			m.WriteErrors.Add(1)
-			c.String(http.StatusInternalServerError, "Failed to write data: %v", err)
-			return
-		}
-	default:
-		// No errors
+	// Check for errors
+	if firstErr != nil {
+		m.WriteErrors.Add(1)
+		c.String(http.StatusInternalServerError, "Failed to write data: %v", firstErr)
+		return
 	}
 
 	c.Status(http.StatusNoContent)
@@ -309,73 +303,14 @@ func (h *Handler) ensureDatabaseExists(ctx context.Context, database string) err
 	// Create schema
 	_, err = h.pool.Exec(ctx, fmt.Sprintf("CREATE SCHEMA %s", pgx.Identifier{database}.Sanitize()))
 	if err != nil {
-		// Ignore "already exists" error in case of race condition
-		if !strings.Contains(err.Error(), "already exists") {
+		// Check for PostgreSQL error code 42P06 (duplicate schema)
+		if !strings.Contains(err.Error(), "already exists") && !strings.Contains(err.Error(), "42P06") {
 			return fmt.Errorf("failed to create schema: %w", err)
 		}
+		// Schema already exists, continue
 	}
 
 	log.Printf("Auto-created database (schema): %s", database)
 	return nil
 }
 
-func (h *Handler) insertPointsBatch(ctx context.Context, database, measurement string, points []*Point, columns []string) error {
-	if len(points) == 0 {
-		return nil
-	}
-
-	// Build INSERT statement
-	var b strings.Builder
-	b.WriteString("INSERT INTO ")
-	b.WriteString(pgx.Identifier{database, measurement}.Sanitize())
-	b.WriteString(" (")
-
-	for i, col := range columns {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(pgx.Identifier{col}.Sanitize())
-	}
-
-	b.WriteString(") VALUES ")
-
-	// Add value placeholders
-	valueIdx := 1
-	for i := range points {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString("(")
-		for j := range columns {
-			if j > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(fmt.Sprintf("$%d", valueIdx))
-			valueIdx++
-		}
-		b.WriteString(")")
-	}
-
-	// Flatten values
-	values := make([]interface{}, 0, len(points)*len(columns))
-	for _, point := range points {
-		for _, col := range columns {
-			switch col {
-			case "time":
-				values = append(values, point.Timestamp)
-			default:
-				if val, ok := point.Tags[col]; ok {
-					values = append(values, val)
-				} else if val, ok := point.Fields[col]; ok {
-					values = append(values, val)
-				} else {
-					values = append(values, nil)
-				}
-			}
-		}
-	}
-
-	// Execute batch insert
-	_, err := h.pool.Exec(ctx, b.String(), values...)
-	return err
-}

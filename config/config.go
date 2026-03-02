@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -103,12 +104,12 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// ConnectionString returns the PostgreSQL connection string
+// ConnectionString returns the PostgreSQL connection string with URL-encoded credentials
 func (c *DatabaseConfig) ConnectionString() string {
 	return fmt.Sprintf(
 		"postgres://%s:%s@%s:%d/%s?pool_max_conns=%d&pool_max_conn_lifetime=%ds&pool_max_conn_idle_time=%ds",
-		c.User,
-		c.Password,
+		url.QueryEscape(c.User),
+		url.QueryEscape(c.Password),
 		c.Host,
 		c.Port,
 		c.Database,
