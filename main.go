@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/penguinpowernz/timeflux/auth"
 	"github.com/penguinpowernz/timeflux/config"
@@ -128,6 +129,7 @@ func main() {
 	// Add middleware
 	router.Use(gin.Recovery())
 	router.Use(ginLogger())
+	router.Use(influxDBHeadersMiddleware())
 
 	// Add authentication middleware if enabled
 	if cfg.Auth.Enabled {
@@ -196,6 +198,23 @@ func main() {
 	schemaManager.Shutdown()
 
 	log.Printf("Server stopped")
+}
+
+// influxDBHeadersMiddleware adds InfluxDB-compatible HTTP headers to all responses
+func influxDBHeadersMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Generate unique request ID
+		requestID := uuid.New().String()
+
+		// Set InfluxDB-compatible headers
+		c.Header("X-Influxdb-Version", "1.8.10")
+		c.Header("X-Influxdb-Build", "OSS")
+		c.Header("Request-Id", requestID)
+		c.Header("X-Request-Id", requestID)
+
+		// Process request
+		c.Next()
+	}
 }
 
 // ginLogger is a custom Gin logger middleware

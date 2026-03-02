@@ -74,7 +74,7 @@ func (h *Handler) Handle(c *gin.Context) {
 
 	// Translate InfluxQL to SQL
 	translator := NewTranslator(database)
-	sql, err := translator.Translate(query)
+	sql, queryType, err := translator.TranslateWithType(query)
 	if err != nil {
 		log.Printf("Error translating query: %v", err)
 		m.QueryErrors.Add(1)
@@ -95,7 +95,7 @@ func (h *Handler) Handle(c *gin.Context) {
 	}
 
 	// Send response in InfluxDB format
-	h.sendSuccessResponse(c, results)
+	h.sendSuccessResponse(c, results, queryType)
 }
 
 // isSystemQuery checks if a query can run without a database parameter
@@ -158,13 +158,17 @@ func (h *Handler) executeQuery(ctx context.Context, sql string) (*QueryResult, e
 	return result, nil
 }
 
-func (h *Handler) sendSuccessResponse(c *gin.Context, result *QueryResult) {
+func (h *Handler) sendSuccessResponse(c *gin.Context, result *QueryResult, queryType QueryType) {
+	// Determine the series name based on the query type
+	seriesName := h.determineSeriesName(queryType)
+
 	response := InfluxDBResponse{
 		Results: []InfluxDBResult{
 			{
 				StatementID: 0,
 				Series: []InfluxDBSeries{
 					{
+						Name:    seriesName,
 						Columns: result.Columns,
 						Values:  result.Values,
 					},
@@ -174,6 +178,26 @@ func (h *Handler) sendSuccessResponse(c *gin.Context, result *QueryResult) {
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+// determineSeriesName returns the appropriate series name based on the query type
+func (h *Handler) determineSeriesName(queryType QueryType) string {
+	switch queryType {
+	case QueryTypeShowDatabases:
+		return "databases"
+	case QueryTypeShowMeasurements:
+		return "measurements"
+	case QueryTypeShowTagKeys:
+		return "tagKeys"
+	case QueryTypeShowTagValues:
+		return "tagValues"
+	case QueryTypeShowFieldKeys:
+		return "fieldKeys"
+	case QueryTypeShowSeries:
+		return "series"
+	default:
+		return ""
+	}
 }
 
 func (h *Handler) sendErrorResponse(c *gin.Context, errMsg string) {

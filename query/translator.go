@@ -9,6 +9,24 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// QueryType represents the type of InfluxQL query
+type QueryType string
+
+const (
+	QueryTypeSelect           QueryType = "select"
+	QueryTypeShowDatabases    QueryType = "show_databases"
+	QueryTypeShowMeasurements QueryType = "show_measurements"
+	QueryTypeShowTagKeys      QueryType = "show_tag_keys"
+	QueryTypeShowTagValues    QueryType = "show_tag_values"
+	QueryTypeShowFieldKeys    QueryType = "show_field_keys"
+	QueryTypeShowSeries       QueryType = "show_series"
+	QueryTypeCreateDatabase   QueryType = "create_database"
+	QueryTypeDropDatabase     QueryType = "drop_database"
+	QueryTypeDropSeries       QueryType = "drop_series"
+	QueryTypeDropMeasurement  QueryType = "drop_measurement"
+	QueryTypeUnknown          QueryType = "unknown"
+)
+
 // Translator converts InfluxQL to PostgreSQL SQL
 type Translator struct {
 	database string
@@ -23,14 +41,20 @@ func NewTranslator(database string) *Translator {
 
 // Translate converts an InfluxQL query to PostgreSQL SQL
 func (t *Translator) Translate(query string) (string, error) {
+	sql, _, err := t.TranslateWithType(query)
+	return sql, err
+}
+
+// TranslateWithType converts an InfluxQL query to PostgreSQL SQL and returns the query type
+func (t *Translator) TranslateWithType(query string) (string, QueryType, error) {
 	// Parse InfluxQL
 	q, err := influxql.ParseQuery(query)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse InfluxQL: %w", err)
+		return "", QueryTypeUnknown, fmt.Errorf("failed to parse InfluxQL: %w", err)
 	}
 
 	if len(q.Statements) == 0 {
-		return "", fmt.Errorf("no statements in query")
+		return "", QueryTypeUnknown, fmt.Errorf("no statements in query")
 	}
 
 	// For now, handle only the first statement
@@ -38,29 +62,40 @@ func (t *Translator) Translate(query string) (string, error) {
 
 	switch s := stmt.(type) {
 	case *influxql.SelectStatement:
-		return t.translateSelect(s)
+		sql, err := t.translateSelect(s)
+		return sql, QueryTypeSelect, err
 	case *influxql.ShowMeasurementsStatement:
-		return t.translateShowMeasurements(s)
+		sql, err := t.translateShowMeasurements(s)
+		return sql, QueryTypeShowMeasurements, err
 	case *influxql.ShowTagKeysStatement:
-		return t.translateShowTagKeys(s)
+		sql, err := t.translateShowTagKeys(s)
+		return sql, QueryTypeShowTagKeys, err
 	case *influxql.ShowTagValuesStatement:
-		return t.translateShowTagValues(s)
+		sql, err := t.translateShowTagValues(s)
+		return sql, QueryTypeShowTagValues, err
 	case *influxql.ShowFieldKeysStatement:
-		return t.translateShowFieldKeys(s)
+		sql, err := t.translateShowFieldKeys(s)
+		return sql, QueryTypeShowFieldKeys, err
 	case *influxql.ShowDatabasesStatement:
-		return t.translateShowDatabases(s)
+		sql, err := t.translateShowDatabases(s)
+		return sql, QueryTypeShowDatabases, err
 	case *influxql.CreateDatabaseStatement:
-		return t.translateCreateDatabase(s)
+		sql, err := t.translateCreateDatabase(s)
+		return sql, QueryTypeCreateDatabase, err
 	case *influxql.ShowSeriesStatement:
-		return t.translateShowSeries(s)
+		sql, err := t.translateShowSeries(s)
+		return sql, QueryTypeShowSeries, err
 	case *influxql.DropSeriesStatement:
-		return t.translateDropSeries(s)
+		sql, err := t.translateDropSeries(s)
+		return sql, QueryTypeDropSeries, err
 	case *influxql.DropMeasurementStatement:
-		return t.translateDropMeasurement(s)
+		sql, err := t.translateDropMeasurement(s)
+		return sql, QueryTypeDropMeasurement, err
 	case *influxql.DropDatabaseStatement:
-		return t.translateDropDatabase(s)
+		sql, err := t.translateDropDatabase(s)
+		return sql, QueryTypeDropDatabase, err
 	default:
-		return "", fmt.Errorf("unsupported statement type: %T", stmt)
+		return "", QueryTypeUnknown, fmt.Errorf("unsupported statement type: %T", stmt)
 	}
 }
 
@@ -500,19 +535,12 @@ func (t *Translator) translateShowTagValues(stmt *influxql.ShowTagValuesStatemen
 		return "", err
 	}
 
-	// Extract tag key from the condition
-	// SHOW TAG VALUES typically has a WITH KEY clause
-	// For simplicity, we'll look at the Condition field
+	// Extract tag key from TagKeyExpr (WITH KEY = 'tagname')
 	tagName := ""
-	if stmt.Condition != nil {
-		if binaryExpr, ok := stmt.Condition.(*influxql.BinaryExpr); ok {
-			if varRef, ok := binaryExpr.LHS.(*influxql.VarRef); ok {
-				if varRef.Val == "_tagKey" && binaryExpr.Op == influxql.EQ {
-					if strLit, ok := binaryExpr.RHS.(*influxql.StringLiteral); ok {
-						tagName = strLit.Val
-					}
-				}
-			}
+	if stmt.TagKeyExpr != nil {
+		// TagKeyExpr is a StringLiteral containing the tag key name
+		if lit, ok := stmt.TagKeyExpr.(*influxql.StringLiteral); ok {
+			tagName = lit.Val
 		}
 	}
 
