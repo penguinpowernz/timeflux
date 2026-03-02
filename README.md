@@ -11,6 +11,7 @@ Timeflux is a Go-based HTTP service that implements the InfluxDB v1 API, transla
 - **Dynamic Schema Evolution**: Automatically creates tables and columns as new measurements, tags, and fields appear
 - **Background Index Creation**: Tag indexes created asynchronously to avoid blocking writes
 - **Concurrent Write Safety**: Handles multiple concurrent writes with proper locking
+- **Authentication & Authorization**: User management with granular database and measurement permissions
 - **TimescaleDB Native**: Data stored in native PostgreSQL columns for easy migration
 - **Production-Ready**: Comprehensive metrics, error handling, and graceful shutdown
 
@@ -52,13 +53,13 @@ git clone https://github.com/penguinpowernz/timeflux.git
 cd timeflux
 
 # Start both services
-docker-compose up -d
+make up
 
 # Check logs
-docker-compose logs -f timeflux
+make logs
 
 # Stop services
-docker-compose down
+make down
 ```
 
 The `config.yaml` file is already configured to connect to the TimescaleDB container. Timeflux will be available at `http://localhost:8086`.
@@ -114,19 +115,122 @@ wal:
   segment_size_mb: 64
   segment_cache_size: 2
   no_sync: false  # set to true for testing only (faster but no crash safety)
+
+auth:
+  enabled: false  # set to true to require authentication
 ```
 
 4. Build the application:
 ```bash
-go build -o timeflux
+make build
 ```
 
 5. Run the application:
 ```bash
-./timeflux -config config.yaml
+make run
+# or
+bin/timeflux -config config.yaml
 ```
 
 The server will start on port 8086 (or the port specified in your config).
+
+## Authentication
+
+Timeflux supports user-based authentication and authorization with granular permissions at the database and measurement level.
+
+### Enabling Authentication
+
+Set `auth.enabled: true` in your `config.yaml` file:
+
+```yaml
+auth:
+  enabled: true
+```
+
+### User Management
+
+User management is performed via command-line interface:
+
+**Add a user:**
+```bash
+# With auto-generated password
+bin/timeflux user:add alice
+# With specified password
+bin/timeflux user:add alice mypassword
+```
+
+**Grant permissions:**
+```bash
+# Grant read/write to entire database
+bin/timeflux user:grant alice mydb:rw
+
+# Grant read-only to specific measurement
+bin/timeflux user:grant alice mydb.cpu:r
+
+# Grant write to all databases (wildcard)
+bin/timeflux user:grant alice "*:w"
+
+# Grant read to specific measurement across all databases
+bin/timeflux user:grant alice "*.cpu:r"
+```
+
+**List users and permissions:**
+```bash
+# List all users
+bin/timeflux user:list
+
+# Show user details and permissions
+bin/timeflux user:show alice
+```
+
+**Other commands:**
+```bash
+# Reset password
+bin/timeflux user:reset-password alice newpassword
+
+# Revoke permission
+bin/timeflux user:revoke alice mydb.cpu
+
+# Delete user
+bin/timeflux user:delete alice
+```
+
+### Authentication Methods
+
+Timeflux supports multiple authentication methods compatible with InfluxDB clients:
+
+**Query parameters:**
+```bash
+curl 'http://localhost:8086/query?u=alice&p=password&db=mydb&q=SELECT+*+FROM+cpu'
+```
+
+**Basic Auth:**
+```bash
+curl -u alice:password 'http://localhost:8086/query?db=mydb&q=SELECT+*+FROM+cpu'
+```
+
+**Token header (username:password):**
+```bash
+curl -H 'Authorization: Token alice:password' \
+  'http://localhost:8086/query?db=mydb&q=SELECT+*+FROM+cpu'
+```
+
+### Permission Model
+
+Permissions are granted at two levels:
+- **Database level**: Access to all measurements in a database (`database:rw`)
+- **Measurement level**: Access to specific measurements (`database.measurement:r`)
+
+Wildcards are supported:
+- `*:rw` - All databases, all measurements
+- `*.cpu:r` - CPU measurement across all databases
+- `mydb.*:w` - All measurements in mydb (implied when using `mydb:w`)
+
+Permission precedence (most specific wins):
+1. `database.measurement` (specific measurement)
+2. `database.*` (all measurements in database)
+3. `*.measurement` (specific measurement across databases)
+4. `*.*` (global wildcard)
 
 ## Usage
 
@@ -300,9 +404,11 @@ Field types are inferred from InfluxDB line protocol:
 ```
 /
 ├── main.go                 # Entry point, HTTP server setup
+├── Makefile               # Build automation
 ├── go.mod
 ├── go.sum
 ├── config.yaml            # Configuration file
+├── bin/                   # Built binaries
 ├── config/
 │   └── config.go          # Configuration management
 ├── schema/
@@ -315,6 +421,12 @@ Field types are inferred from InfluxDB line protocol:
 ├── query/
 │   ├── handler.go         # Query endpoint handler
 │   └── translator.go      # InfluxQL to SQL translator
+├── auth/
+│   ├── auth.go            # Credential parsing
+│   ├── middleware.go      # Authentication and authorization middleware
+│   └── user_manager.go    # User and permission management
+├── usercli/
+│   └── user.go            # User management CLI commands
 ├── metrics/
 │   └── metrics.go         # Metrics collection
 └── README.md
@@ -324,18 +436,21 @@ Field types are inferred from InfluxDB line protocol:
 
 ### Current Limitations
 - InfluxDB v2 API not supported (Flux query language)
-- No authentication/authorization
+- Bearer token (JWT) authentication not yet implemented
 - Single instance only (no clustering)
 - Subset of InfluxQL features supported
+- Measurement-level permissions extracted at database level (not from query content)
 
 ### Future Enhancements
-- Authentication (basic auth, token-based)
+- JWT/Bearer token authentication
+- Fine-grained measurement extraction from queries for permission checks
 - Multiple instances with shared metadata
 - Query result caching
 - Rate limiting
 - Broader InfluxQL support
-- Prometheus metrics endpoint
+- Prometheus metrics endpoint (currently JSON)
 - Admin API for schema inspection
+- User session management and audit logging
 
 ## Example: Using with Telegraf
 
@@ -413,6 +528,21 @@ Check logs for unsupported InfluxQL features. The translator currently supports 
 MIT License
 
 ## Development
+
+### Build Commands
+
+```bash
+make build        # Build binary to bin/timeflux
+make clean        # Remove built binaries
+make test         # Run tests
+make run          # Build and run
+
+make up           # Start Docker Compose services
+make down         # Stop Docker Compose services
+make logs         # Follow timeflux logs
+make reup         # Rebuild and restart timeflux container
+make dcl          # Stop and remove volumes
+```
 
 For developers and AI assistants working on this project, see [CLAUDE.md](CLAUDE.md) for:
 - Architecture overview

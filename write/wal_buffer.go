@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,8 +24,7 @@ type WALBuffer struct {
 	stopCh        chan struct{}
 	fsyncTicker   *time.Ticker
 	mu            sync.Mutex
-	nextIndex     uint64 // shared read position for workers (protected by indexMu)
-	indexMu       sync.Mutex
+	nextIndex     uint64 // shared read position for workers (accessed atomically)
 }
 
 // WALConfig holds configuration for the WAL buffer
@@ -157,35 +157,37 @@ func (w *WALWorker) run() {
 			log.Printf("WAL worker %d stopping", w.id)
 			return
 		case <-ticker.C:
-			// Get next entry to process atomically
-			w.walBuffer.indexMu.Lock()
-			currentIndex := w.walBuffer.nextIndex
-
-			// Check if there are new entries
+			// Get last index to check if there's work
 			lastIndex, err := w.walBuffer.wal.LastIndex()
 			if err != nil {
-				w.walBuffer.indexMu.Unlock()
 				log.Printf("WAL worker %d: failed to get last index: %v", w.id, err)
 				continue
 			}
 
-			// If no new entries, unlock and continue
-			if currentIndex > lastIndex {
-				w.walBuffer.indexMu.Unlock()
-				continue
-			}
+			// Atomically claim the next entry to process
+			// This loop handles the case where lastIndex changes during iteration
+			for {
+				currentIndex := atomic.LoadUint64(&w.walBuffer.nextIndex)
 
-			// Claim this index by incrementing nextIndex
-			w.walBuffer.nextIndex++
-			w.walBuffer.indexMu.Unlock()
+				// If no new entries, break
+				if currentIndex > lastIndex {
+					break
+				}
 
-			// Process the entry (outside of lock)
-			if err := w.processEntry(currentIndex); err != nil {
-				log.Printf("WAL worker %d: failed to process entry %d: %v", w.id, currentIndex, err)
-				// Skip corrupted entry and continue
-				metrics.Global().WALReplayFailures.Add(1)
-			} else {
-				metrics.Global().WALReplaySuccess.Add(1)
+				// Try to atomically increment nextIndex
+				// If another worker claims this entry first, try again
+				if atomic.CompareAndSwapUint64(&w.walBuffer.nextIndex, currentIndex, currentIndex+1) {
+					// Successfully claimed this entry, process it
+					if err := w.processEntry(currentIndex); err != nil {
+						log.Printf("WAL worker %d: failed to process entry %d: %v", w.id, currentIndex, err)
+						// Skip corrupted entry and continue
+						metrics.Global().WALReplayFailures.Add(1)
+					} else {
+						metrics.Global().WALReplaySuccess.Add(1)
+					}
+					break
+				}
+				// CAS failed, another worker claimed this entry, try next one
 			}
 		}
 	}

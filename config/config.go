@@ -111,6 +111,7 @@ func Load(path string) (*Config, error) {
 }
 
 // ConnectionString returns the PostgreSQL connection string with URL-encoded credentials
+// WARNING: This string contains sensitive credentials and must NEVER be logged
 func (c *DatabaseConfig) ConnectionString() string {
 	return fmt.Sprintf(
 		"postgres://%s:%s@%s:%d/%s?pool_max_conns=%d&pool_max_conn_lifetime=%ds&pool_max_conn_idle_time=%ds",

@@ -1,11 +1,12 @@
 module github.com/penguinpowernz/timeflux
 
-go 1.25.3
+go 1.25.0
 
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang/snappy v1.0.0
 	github.com/google/uuid v1.6.0
+	github.com/influxdata/influxdb1-client v0.0.0-20220302092344-a9ab5670611c
 	github.com/influxdata/influxql v1.4.1
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/smartystreets/goconvey v1.8.1
@@ -40,9 +41,8 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
-	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/smarty/assertions v1.15.0 // indirect
-	github.com/tidwall/gjson v1.14.2 // indirect
+	github.com/tidwall/gjson v1.10.2 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tidwall/tinylru v1.1.0 // indirect

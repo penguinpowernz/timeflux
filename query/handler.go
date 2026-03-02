@@ -76,9 +76,9 @@ func (h *Handler) Handle(c *gin.Context) {
 	translator := NewTranslator(database)
 	sql, queryType, err := translator.TranslateWithType(query)
 	if err != nil {
-		log.Printf("Error translating query: %v", err)
+		log.Printf("Error translating query '%s': %v", query, err)
 		m.QueryErrors.Add(1)
-		h.sendErrorResponse(c, fmt.Sprintf("Failed to translate query: %v", err))
+		h.sendErrorResponse(c, sanitizeErrorForClient(err, "Failed to translate query"))
 		return
 	}
 
@@ -90,7 +90,7 @@ func (h *Handler) Handle(c *gin.Context) {
 	if err != nil {
 		log.Printf("Error executing query: %v", err)
 		m.QueryErrors.Add(1)
-		h.sendErrorResponse(c, fmt.Sprintf("Failed to execute query: %v", err))
+		h.sendErrorResponse(c, sanitizeErrorForClient(err, "Failed to execute query"))
 		return
 	}
 
@@ -237,4 +237,39 @@ type InfluxDBSeries struct {
 	Name    string          `json:"name,omitempty"`
 	Columns []string        `json:"columns"`
 	Values  [][]interface{} `json:"values,omitempty"`
+}
+
+// sanitizeErrorForClient removes sensitive information from errors before sending to clients
+// Logs detailed error server-side, returns generic message to client
+func sanitizeErrorForClient(err error, genericMsg string) string {
+	if err == nil {
+		return genericMsg
+	}
+
+	errStr := err.Error()
+
+	// Check for known error patterns that are safe to expose
+	safePatterns := []string{
+		"invalid identifier",
+		"identifier cannot be empty",
+		"identifier too long",
+		"identifier must start with",
+		"invalid measurement name",
+		"invalid database name",
+		"unsupported statement",
+		"no statements in query",
+		"measurement required",
+		"database parameter required",
+		"query parameter required",
+	}
+
+	for _, pattern := range safePatterns {
+		if strings.Contains(strings.ToLower(errStr), strings.ToLower(pattern)) {
+			return genericMsg + ": " + errStr
+		}
+	}
+
+	// For all other errors, return only the generic message
+	// The detailed error is already logged server-side
+	return genericMsg
 }

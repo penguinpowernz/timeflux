@@ -233,6 +233,7 @@ func (um *UserManager) RevokePermission(ctx context.Context, username, database,
 }
 
 // Authenticate checks if the provided credentials are valid
+// Uses constant-time comparison to prevent timing attacks for username enumeration
 func (um *UserManager) Authenticate(ctx context.Context, username, password string) (bool, error) {
 	query := fmt.Sprintf(`
 		SELECT password_hash FROM %s WHERE username = $1
@@ -240,14 +241,21 @@ func (um *UserManager) Authenticate(ctx context.Context, username, password stri
 
 	var hash string
 	err := um.pool.QueryRow(ctx, query, username).Scan(&hash)
+
+	// Use a dummy hash if user doesn't exist to prevent timing attacks
+	// This ensures bcrypt is always called, making timing consistent
+	dummyHash := "$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYKKDq0.1im" // bcrypt hash of "dummy"
+
 	if err != nil {
 		if err == pgx.ErrNoRows {
+			// User doesn't exist - still perform bcrypt to prevent timing attack
+			bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(password))
 			return false, nil
 		}
 		return false, fmt.Errorf("failed to query user: %w", err)
 	}
 
-	// Compare password
+	// Compare password (always performed regardless of user existence)
 	err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	return err == nil, nil
 }

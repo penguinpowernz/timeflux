@@ -57,6 +57,13 @@ func (h *Handler) Handle(c *gin.Context) {
 		return
 	}
 
+	// Validate database name
+	if err := validateIdentifier(database); err != nil {
+		log.Printf("Invalid database name '%s': %v", database, err)
+		c.String(http.StatusBadRequest, "invalid database name")
+		return
+	}
+
 	// Auto-create database if enabled
 	if h.autoCreateDatabases {
 		if err := h.ensureDatabaseExists(c.Request.Context(), database); err != nil {
@@ -148,6 +155,11 @@ func (h *Handler) Handle(c *gin.Context) {
 func (h *Handler) writePoints(ctx context.Context, database, measurement string, points []*Point) error {
 	if len(points) == 0 {
 		return nil
+	}
+
+	// Validate measurement name
+	if err := validateIdentifier(measurement); err != nil {
+		return fmt.Errorf("invalid measurement name '%s': %w", measurement, err)
 	}
 
 	// Collect all unique tags and fields from this batch
@@ -311,6 +323,40 @@ func (h *Handler) ensureDatabaseExists(ctx context.Context, database string) err
 	}
 
 	log.Printf("Auto-created database (schema): %s", database)
+	return nil
+}
+
+// validateIdentifier validates database, measurement, and column names to prevent SQL injection
+// Allows only alphanumeric characters, underscores, and must start with a letter or underscore
+func validateIdentifier(name string) error {
+	if name == "" {
+		return fmt.Errorf("identifier cannot be empty")
+	}
+
+	// Check length (PostgreSQL limit is 63 bytes)
+	if len(name) > 63 {
+		return fmt.Errorf("identifier too long (max 63 characters)")
+	}
+
+	// Must start with letter or underscore
+	firstChar := name[0]
+	if !((firstChar >= 'a' && firstChar <= 'z') ||
+		(firstChar >= 'A' && firstChar <= 'Z') ||
+		firstChar == '_') {
+		return fmt.Errorf("identifier must start with letter or underscore")
+	}
+
+	// Rest can be alphanumeric or underscore
+	for i := 1; i < len(name); i++ {
+		c := name[i]
+		if !((c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '_') {
+			return fmt.Errorf("identifier contains invalid character: %c", c)
+		}
+	}
+
 	return nil
 }
 

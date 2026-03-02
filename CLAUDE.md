@@ -12,6 +12,7 @@ Timeflux is an InfluxDB v1 API facade that translates requests to TimescaleDB. I
 - Parallel measurement writes
 - Streaming COPY operations
 - CRC32 checksums for data integrity
+- User authentication and authorization with bcrypt password hashing
 
 ## Architecture
 
@@ -60,6 +61,21 @@ Timeflux is an InfluxDB v1 API facade that translates requests to TimescaleDB. I
    - Tracks writes, queries, schema evolutions, WAL operations
    - Duration statistics (avg/min/max)
    - Exposed via `/metrics` endpoint
+
+8. **Authentication System** (`auth/`)
+   - User management with bcrypt password hashing (cost 12)
+   - Credential parsing from URL params, Basic Auth, and Token headers
+   - Authorization middleware with granular permissions
+   - Database and measurement-level access control
+   - Wildcard permission support (`*` for all databases/measurements)
+   - User and permission management tables (`_timeflux_users`, `_timeflux_user_permissions`)
+
+9. **User Management CLI** (`usercli/user.go`)
+   - Command-line interface for user operations
+   - User creation with auto-generated passwords
+   - Permission granting/revoking
+   - User listing and inspection
+   - Password reset functionality
 
 ## Key Design Patterns
 
@@ -210,6 +226,23 @@ Changes to `schema/manager.go` must maintain:
 2. **Query errors**: Return HTTP 200 with error in JSON (InfluxDB convention)
 3. **Log all errors** with context
 4. **DDL errors**: Ignore "already exists" errors gracefully
+5. **Auth errors**: Return HTTP 401 for authentication failures, 403 for authorization failures
+
+### Modifying Authentication
+
+Changes to authentication/authorization must maintain:
+- Bcrypt password security (cost 12)
+- Protection of auth tables from HTTP query access
+- Proper credential parsing from all supported methods (Basic Auth, Token, query params)
+- Permission precedence (specific > wildcard)
+- Backward compatibility with InfluxDB clients
+- Cascading permission deletion when users are deleted
+
+When adding new auth methods:
+1. Add credential parsing in `auth/auth.go::ParseCredentials()`
+2. Update middleware in `auth/middleware.go`
+3. Ensure auth tables remain inaccessible via query endpoint
+4. Test with standard InfluxDB clients (curl, telegraf, etc.)
 
 ## Testing Approach
 
@@ -225,6 +258,25 @@ Query test:
 ```bash
 curl -G 'http://localhost:8086/query?db=testdb' \
   --data-urlencode 'q=SELECT mean(value) FROM cpu GROUP BY time(5m)'
+```
+
+Authentication test:
+```bash
+# Create user and grant permission
+bin/timeflux user:add testuser testpass
+bin/timeflux user:grant testuser testdb:rw
+
+# Test write with auth
+curl -i -XPOST -u testuser:testpass 'http://localhost:8086/write?db=testdb' \
+  --data-binary 'cpu,host=server1 value=85.3 1620000000000000000'
+
+# Test query with auth
+curl -G -u testuser:testpass 'http://localhost:8086/query?db=testdb' \
+  --data-urlencode 'q=SELECT mean(value) FROM cpu GROUP BY time(5m)'
+
+# Test unauthorized access
+curl -i -XPOST 'http://localhost:8086/write?db=testdb' \
+  --data-binary 'cpu value=1'  # Should return 401
 ```
 
 ### Docker Testing
@@ -271,33 +323,56 @@ docker-compose logs -f timeflux
 - Use transactions where appropriate
 - Consider adding cache invalidation endpoint for debugging
 
+### Issue: Authentication bypass attempts
+
+**Problem**: Users trying to access auth tables or bypass permissions
+
+**Solution**:
+- Auth tables are protected via `IsAuthTableQuery()` check in query handler
+- All queries containing `_timeflux_users` or `_timeflux_user_permissions` are rejected
+- Permission middleware runs before handlers to prevent unauthorized access
+- SQL injection prevented by `pgx.Identifier{}.Sanitize()` usage
+- Passwords never logged or returned in API responses
+
 ## File Structure Reference
 
 ```
 /
-├── main.go                 # HTTP server, middleware, signal handling
+├── main.go                 # HTTP server, middleware, signal handling, user CLI
 ├── config/
-│   └── config.go          # YAML config parsing, connection strings
+│   └── config.go          # YAML config parsing, connection strings, auth config
 ├── schema/
 │   └── manager.go         # Schema cache, DDL, metadata table
 ├── write/
 │   ├── handler.go         # Write endpoint, COPY FROM bulk insert
-│   └── lineprotocol.go    # Parser, type inference
+│   ├── lineprotocol.go    # Parser, type inference
+│   ├── wal_buffer.go      # WAL buffer, worker pool, recovery
+│   └── wal_entry.go       # WAL entry format with CRC32 checksums
 ├── query/
 │   ├── handler.go         # Query endpoint, result formatting
 │   └── translator.go      # InfluxQL → SQL AST translation
+├── auth/
+│   ├── auth.go            # Credential parsing (Basic Auth, Token, query params)
+│   ├── middleware.go      # Authentication and authorization middleware
+│   └── user_manager.go    # User CRUD, permission management, bcrypt
+├── usercli/
+│   └── user.go            # User management CLI commands
+├── metrics/
+│   └── metrics.go         # Metrics collection
 ├── Dockerfile             # Multi-stage build
 ├── docker-compose.yml     # TimescaleDB + Timeflux
-└── config.yaml           # Docker-ready config
+└── config.yaml            # Docker-ready config
 ```
 
 ## Future Enhancement Ideas
 
 ### High Priority
-- Authentication (basic auth, token-based)
-- Rate limiting
+- JWT/Bearer token authentication (currently only username:password)
+- Fine-grained measurement extraction from queries for permission checks
+- Rate limiting per user/database
 - Connection pool monitoring
 - More InfluxQL functions (percentile, derivative, difference)
+- Audit logging for authentication and permission events
 
 ### Medium Priority
 - Continuous aggregates support
@@ -307,9 +382,11 @@ docker-compose logs -f timeflux
 
 ### Low Priority
 - Multiple instance support with shared cache (Redis)
-- InfluxDB v2 compatibility layer
-- Prometheus metrics endpoint
+- InfluxDB v2 compatibility layer with Bearer token support
+- Prometheus metrics endpoint (currently JSON format)
 - Query optimizer hints
+- User session management and token-based sessions
+- Role-based access control (RBAC) with predefined roles
 
 ## Dependencies
 
@@ -317,8 +394,10 @@ docker-compose logs -f timeflux
 - `github.com/influxdata/influxql` - Official InfluxQL parser
 - `github.com/tidwall/wal` - Write-ahead log implementation
 - `github.com/golang/snappy` - Snappy compression
+- `golang.org/x/crypto/bcrypt` - Secure password hashing for authentication
 - `gopkg.in/yaml.v3` - YAML config parsing
-- `github.com/gin-gonic/gin` - HTTP router
+- `github.com/gin-gonic/gin` - HTTP router and middleware
+- `github.com/google/uuid` - UUID generation for request IDs
 
 ## Code Style
 
@@ -341,6 +420,31 @@ CREATE TABLE {schema}._timeflux_metadata (
 ```
 
 This tracks which columns are tags vs fields, necessary for correct query translation.
+
+## Authentication Tables Schema
+
+```sql
+-- Users table
+CREATE TABLE _timeflux_users (
+    username TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Permissions table
+CREATE TABLE _timeflux_user_permissions (
+    username TEXT NOT NULL,
+    database TEXT NOT NULL,           -- can be '*' for wildcard
+    measurement TEXT NOT NULL DEFAULT '',  -- empty means all measurements
+    can_read BOOLEAN NOT NULL DEFAULT false,
+    can_write BOOLEAN NOT NULL DEFAULT false,
+    PRIMARY KEY (username, database, measurement),
+    FOREIGN KEY (username) REFERENCES _timeflux_users(username) ON DELETE CASCADE
+);
+```
+
+Authentication tables are protected from query access via `IsAuthTableQuery()` check in handlers.
 
 ## Performance Considerations
 
@@ -407,24 +511,40 @@ This tracks which columns are tags vs fields, necessary for correct query transl
 
 ```bash
 # Build
-go build -o timeflux
+make build        # Build to bin/timeflux
+make clean        # Remove built binaries
+make test         # Run tests
+make run          # Build and run
 
 # Run with custom config
-./timeflux -config my-config.yaml
+bin/timeflux -config my-config.yaml
 
-# Docker build
-docker build -t timeflux .
+# User management
+bin/timeflux user:add alice                    # Add user with auto-generated password
+bin/timeflux user:add alice mypassword         # Add user with specific password
+bin/timeflux user:grant alice mydb:rw          # Grant read/write to database
+bin/timeflux user:grant alice mydb.cpu:r       # Grant read to specific measurement
+bin/timeflux user:grant alice "*:rw"           # Grant read/write to all databases
+bin/timeflux user:revoke alice mydb.cpu        # Revoke specific permission
+bin/timeflux user:reset-password alice newpw   # Reset password
+bin/timeflux user:list                         # List all users
+bin/timeflux user:show alice                   # Show user details and permissions
+bin/timeflux user:delete alice                 # Delete user
 
-# Docker compose
-docker-compose up -d
-docker-compose logs -f timeflux
-docker-compose down
+# Docker commands
+make up           # Start Docker Compose services
+make down         # Stop Docker Compose services
+make logs         # Follow timeflux logs
+make reup         # Rebuild and restart timeflux container
+make dcl          # Stop and remove volumes
 
 # Database inspection
 docker exec -it timeflux-timescaledb psql -U postgres -d timeseries
 \dn  # list schemas
 \dt mydb.*  # list tables in schema
 SELECT * FROM mydb._timeflux_metadata;
+SELECT * FROM _timeflux_users;
+SELECT * FROM _timeflux_user_permissions;
 ```
 
 ## When Modifying This Project

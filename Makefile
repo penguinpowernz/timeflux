@@ -1,4 +1,4 @@
-.PHONY: all build clean test run dbuild dup ddown dlogs dclean
+.PHONY: all build clean test run dbuild dup ddown dlogs dclean test-client
 
 BINARY_NAME=timeflux
 BIN_DIR=bin
@@ -10,6 +10,10 @@ all: build
 build:
 	@mkdir -p $(BIN_DIR)
 	go build $(BUILD_FLAGS) -o $(BIN_DIR)/$(BINARY_NAME)
+
+testclient:
+	@mkdir -p $(BIN_DIR)
+	go build $(BUILD_FLAGS) -o $(BIN_DIR)/testclient ./cmd/testclient
 
 clean:
 	@rm -rf $(BIN_DIR)

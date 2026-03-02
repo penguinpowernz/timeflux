@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -107,9 +108,17 @@ func TestCheckPermissionLogic(t *testing.T) {
 
 // Integration tests - only run if TEST_DATABASE_URL is set
 func getTestDB(t *testing.T) *pgxpool.Pool {
-	// Skip integration tests if no database URL provided
-	SkipConvey("Integration tests require TEST_DATABASE_URL", t, func() {})
-	return nil
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		return nil
+	}
+
+	pool, err := pgxpool.New(context.Background(), dbURL)
+	if err != nil {
+		t.Fatalf("Failed to connect to test database: %v", err)
+	}
+
+	return pool
 }
 
 func TestUserManagerIntegration(t *testing.T) {

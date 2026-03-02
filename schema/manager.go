@@ -323,17 +323,20 @@ func (sm *SchemaManager) EnsureSchema(ctx context.Context, database, measurement
 	sm.mu.RUnlock()
 	m.SchemaCacheMisses.Add(1)
 
-	// Slow path: acquire measurement-specific lock for DDL
+	// Slow path: acquire measurement-specific lock BEFORE checking again
+	// This prevents race condition where two goroutines both see missing columns
 	lockKey := database + "." + measurement
 
 	// Use sync.Map to avoid lock contention
 	lockIface, _ := sm.measurementLocks.LoadOrStore(lockKey, &sync.Mutex{})
 	lock := lockIface.(*sync.Mutex)
 
+	// Acquire lock BEFORE the double-check
 	lock.Lock()
 	defer lock.Unlock()
 
 	// Double-check pattern: verify another goroutine didn't already do the work
+	// Now safe because we hold the measurement lock
 	sm.mu.RLock()
 	if sm.hasAllColumns(database, measurement, tags, fields) {
 		sm.mu.RUnlock()

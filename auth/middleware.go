@@ -38,6 +38,7 @@ func Middleware(userManager *UserManager, enabled bool) gin.HandlerFunc {
 		// Authenticate user
 		authenticated, err := userManager.Authenticate(c.Request.Context(), creds.Username, creds.Password)
 		if err != nil {
+			// Note: err from Authenticate() never contains password data - only DB errors
 			log.Printf("Authentication error for user %s: %v", creds.Username, err)
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "authentication failed",
@@ -47,6 +48,7 @@ func Middleware(userManager *UserManager, enabled bool) gin.HandlerFunc {
 		}
 
 		if !authenticated {
+			// Log failed attempts for security monitoring (username only, never password)
 			log.Printf("Failed authentication attempt for user: %s", creds.Username)
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "invalid credentials",

@@ -223,6 +223,12 @@ func (t *Translator) translateExpr(expr influxql.Expr) string {
 	case *influxql.NumberLiteral:
 		return fmt.Sprintf("%v", e.Val)
 
+	case *influxql.IntegerLiteral:
+		return fmt.Sprintf("%d", e.Val)
+
+	case *influxql.UnsignedLiteral:
+		return fmt.Sprintf("%d", e.Val)
+
 	case *influxql.StringLiteral:
 		return "'" + strings.ReplaceAll(e.Val, "'", "''") + "'"
 
@@ -515,10 +521,12 @@ func (t *Translator) translateShowTagKeys(stmt *influxql.ShowTagKeysStatement) (
 		if err != nil {
 			return "", err
 		}
-		// Use parameterized query would require query execution changes,
-		// so properly escape the string literal instead
-		escapedMeasurement := strings.ReplaceAll(measurement, "'", "''")
-		sql.WriteString(fmt.Sprintf(" AND measurement = '%s'", escapedMeasurement))
+		// Validate measurement name to prevent SQL injection
+		if err := validateIdentifier(measurement); err != nil {
+			return "", fmt.Errorf("invalid measurement name: %w", err)
+		}
+		// Use dollar quoting for safe string literal (no escaping needed)
+		sql.WriteString(fmt.Sprintf(" AND measurement = %s", toSafeStringLiteral(measurement)))
 	}
 
 	sql.WriteString(" ORDER BY tagKey")
@@ -574,8 +582,12 @@ func (t *Translator) translateShowFieldKeys(stmt *influxql.ShowFieldKeysStatemen
 		if err != nil {
 			return "", err
 		}
-		escapedMeasurement := strings.ReplaceAll(measurement, "'", "''")
-		sql.WriteString(fmt.Sprintf(" AND measurement = '%s'", escapedMeasurement))
+		// Validate measurement name to prevent SQL injection
+		if err := validateIdentifier(measurement); err != nil {
+			return "", fmt.Errorf("invalid measurement name: %w", err)
+		}
+		// Use dollar quoting for safe string literal (no escaping needed)
+		sql.WriteString(fmt.Sprintf(" AND measurement = %s", toSafeStringLiteral(measurement)))
 	}
 
 	sql.WriteString(" ORDER BY fieldKey")
@@ -612,6 +624,10 @@ func (t *Translator) translateShowSeries(stmt *influxql.ShowSeriesStatement) (st
 		if err != nil {
 			return "", err
 		}
+		// Validate measurement name to prevent SQL injection
+		if err := validateIdentifier(measurement); err != nil {
+			return "", fmt.Errorf("invalid measurement name: %w", err)
+		}
 	}
 
 	// Query to get distinct tag combinations (series)
@@ -619,14 +635,14 @@ func (t *Translator) translateShowSeries(stmt *influxql.ShowSeriesStatement) (st
 	if measurement != "" {
 		// Simplified query that gets tag key-value pairs for the measurement
 		// This avoids the invalid pg_get_expr usage
-		escapedMeasurement := strings.ReplaceAll(measurement, "'", "''")
+		// Use dollar quoting for safe string literal (no escaping needed)
 		sql.WriteString(fmt.Sprintf(`
 			SELECT DISTINCT column_name AS key
 			FROM %s
-			WHERE measurement = '%s' AND is_tag = true
+			WHERE measurement = %s AND is_tag = true
 			ORDER BY column_name
 			LIMIT 100
-		`, pgx.Identifier{t.database, "_timeflux_metadata"}.Sanitize(), escapedMeasurement))
+		`, pgx.Identifier{t.database, "_timeflux_metadata"}.Sanitize(), toSafeStringLiteral(measurement)))
 	} else {
 		// Show series across all measurements
 		sql.WriteString(fmt.Sprintf(`
@@ -685,5 +701,50 @@ func (t *Translator) translateDropDatabase(stmt *influxql.DropDatabaseStatement)
 	// DROP DATABASE drops the entire schema
 	dbName := pgx.Identifier{stmt.Name}.Sanitize()
 	return fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", dbName), nil
+}
+
+// validateIdentifier validates database, measurement, and column names to prevent SQL injection
+// Allows only alphanumeric characters, underscores, and must start with a letter or underscore
+func validateIdentifier(name string) error {
+	if name == "" {
+		return fmt.Errorf("identifier cannot be empty")
+	}
+
+	// Check length (PostgreSQL limit is 63 bytes)
+	if len(name) > 63 {
+		return fmt.Errorf("identifier too long (max 63 characters)")
+	}
+
+	// Must start with letter or underscore
+	firstChar := name[0]
+	if !((firstChar >= 'a' && firstChar <= 'z') ||
+	     (firstChar >= 'A' && firstChar <= 'Z') ||
+	     firstChar == '_') {
+		return fmt.Errorf("identifier must start with letter or underscore")
+	}
+
+	// Rest can be alphanumeric or underscore
+	for i := 1; i < len(name); i++ {
+		c := name[i]
+		if !((c >= 'a' && c <= 'z') ||
+		     (c >= 'A' && c <= 'Z') ||
+		     (c >= '0' && c <= '9') ||
+		     c == '_') {
+			return fmt.Errorf("identifier contains invalid character: %c", c)
+		}
+	}
+
+	return nil
+}
+
+// toSafeStringLiteral converts a validated identifier to a safe SQL string literal
+// This should ONLY be called after validateIdentifier() succeeds
+// Uses PostgreSQL dollar quoting to avoid escaping issues entirely
+func toSafeStringLiteral(name string) string {
+	// Use dollar quoting which doesn't require escaping
+	// Format: $tag$value$tag$ where tag is a unique delimiter
+	// Since we've validated the name contains only alphanumeric and underscore,
+	// we can safely use a simple dollar quote
+	return fmt.Sprintf("$sqli$%s$sqli$", name)
 }
 
