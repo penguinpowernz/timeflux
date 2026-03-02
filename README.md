@@ -180,12 +180,38 @@ curl -G 'http://localhost:8086/query?db=mydb' \
 }
 ```
 
+### Database Management
+
+Create a database:
+```bash
+curl -G 'http://localhost:8086/query' \
+  --data-urlencode 'q=CREATE DATABASE mydb'
+```
+
+Show all databases:
+```bash
+curl -G 'http://localhost:8086/query' \
+  --data-urlencode 'q=SHOW DATABASES'
+```
+
+Drop a database:
+```bash
+curl -G 'http://localhost:8086/query' \
+  --data-urlencode 'q=DROP DATABASE mydb'
+```
+
 ### Schema Introspection
 
 Show all measurements:
 ```bash
 curl -G 'http://localhost:8086/query?db=mydb' \
   --data-urlencode 'q=SHOW MEASUREMENTS'
+```
+
+Show series (unique tag combinations):
+```bash
+curl -G 'http://localhost:8086/query?db=mydb' \
+  --data-urlencode 'q=SHOW SERIES'
 ```
 
 Show tag keys for a measurement:
@@ -198,6 +224,20 @@ Show field keys for a measurement:
 ```bash
 curl -G 'http://localhost:8086/query?db=mydb' \
   --data-urlencode 'q=SHOW FIELD KEYS FROM cpu_usage'
+```
+
+### Data Management
+
+Drop series matching specific tags:
+```bash
+curl -G 'http://localhost:8086/query?db=mydb' \
+  --data-urlencode 'q=DROP SERIES FROM cpu_usage WHERE host='\''server1'\'''
+```
+
+Drop an entire measurement:
+```bash
+curl -G 'http://localhost:8086/query?db=mydb' \
+  --data-urlencode 'q=DROP MEASUREMENT cpu_usage'
 ```
 
 ## Supported InfluxQL Features
@@ -224,6 +264,16 @@ curl -G 'http://localhost:8086/query?db=mydb' \
 - `SHOW MEASUREMENTS`
 - `SHOW TAG KEYS`
 - `SHOW FIELD KEYS`
+- `SHOW DATABASES`
+- `SHOW SERIES`
+
+### Database Management
+- `CREATE DATABASE {name}`
+- `DROP DATABASE {name}`
+
+### Data Management
+- `DROP SERIES FROM {measurement} WHERE {condition}` - Delete rows matching tag filters
+- `DROP MEASUREMENT {name}` - Delete entire measurement table
 
 ## Type Inference
 

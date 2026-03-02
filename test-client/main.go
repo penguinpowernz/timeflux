@@ -107,6 +107,18 @@ func main() {
 	// Test 18: SHOW DATABASES
 	suite.addTest(testShowDatabases(c))
 
+	// Test 19: SHOW SERIES
+	suite.addTest(testShowSeries(c))
+
+	// Test 20: DROP SERIES
+	suite.addTest(testDropSeries(c))
+
+	// Test 21: DROP MEASUREMENT
+	suite.addTest(testDropMeasurement(c))
+
+	// Test 22: DROP DATABASE
+	suite.addTest(testDropDatabase(c))
+
 	// Calculate summary
 	suite.Summary.Total = len(suite.Results)
 	suite.Summary.Duration = time.Since(startTime).String()
@@ -724,6 +736,157 @@ func testShowDatabases(c client.Client) TestResult {
 			"databases": databases,
 			"count":     len(databases),
 		}
+	}
+	return result
+}
+
+func testShowSeries(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "ShowSeries",
+		Description: "SHOW SERIES",
+	}
+
+	q := client.NewQuery("SHOW SERIES", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{
+			"series_count": len(response.Results[0].Series[0].Values),
+		}
+	}
+	return result
+}
+
+func testDropSeries(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "DropSeries",
+		Description: "DROP SERIES with WHERE clause",
+	}
+
+	// First write some test data with specific tags
+	bp, _ := client.NewBatchPoints(client.BatchPointsConfig{
+		Database:  database,
+		Precision: "ns",
+	})
+
+	tags := map[string]string{"test_tag": "drop_me"}
+	fields := map[string]interface{}{"value": 123.45}
+	pt, _ := client.NewPoint("drop_test", tags, fields, time.Now())
+	bp.AddPoint(pt)
+	c.Write(bp)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Now drop the series
+	q := client.NewQuery("DROP SERIES FROM drop_test WHERE test_tag='drop_me'", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{
+		"status": "series dropped",
+	}
+	return result
+}
+
+func testDropMeasurement(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "DropMeasurement",
+		Description: "DROP MEASUREMENT",
+	}
+
+	// First create a test measurement
+	bp, _ := client.NewBatchPoints(client.BatchPointsConfig{
+		Database:  database,
+		Precision: "ns",
+	})
+
+	tags := map[string]string{"host": "test"}
+	fields := map[string]interface{}{"value": 99.99}
+	pt, _ := client.NewPoint("temp_measurement", tags, fields, time.Now())
+	bp.AddPoint(pt)
+	c.Write(bp)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Now drop the measurement
+	q := client.NewQuery("DROP MEASUREMENT temp_measurement", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{
+		"status": "measurement dropped",
+	}
+	return result
+}
+
+func testDropDatabase(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "DropDatabase",
+		Description: "DROP DATABASE",
+	}
+
+	// First create a test database
+	qCreate := client.NewQuery("CREATE DATABASE test_drop_db", "", "")
+	c.Query(qCreate)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Now drop it
+	q := client.NewQuery("DROP DATABASE test_drop_db", "", "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{
+		"status": "database dropped",
 	}
 	return result
 }

@@ -99,6 +99,9 @@ func isSystemQuery(query string) bool {
 		"SHOW DATABASES",
 		"CREATE DATABASE",
 		"DROP DATABASE",
+		"SHOW SERIES",
+		"DROP SERIES",
+		"DROP MEASUREMENT",
 	}
 
 	for _, sysQuery := range systemQueries {

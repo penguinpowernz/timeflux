@@ -51,6 +51,14 @@ func (t *Translator) Translate(query string) (string, error) {
 		return t.translateShowDatabases(s)
 	case *influxql.CreateDatabaseStatement:
 		return t.translateCreateDatabase(s)
+	case *influxql.ShowSeriesStatement:
+		return t.translateShowSeries(s)
+	case *influxql.DropSeriesStatement:
+		return t.translateDropSeries(s)
+	case *influxql.DropMeasurementStatement:
+		return t.translateDropMeasurement(s)
+	case *influxql.DropDatabaseStatement:
+		return t.translateDropDatabase(s)
 	default:
 		return "", fmt.Errorf("unsupported statement type: %T", stmt)
 	}
@@ -541,5 +549,96 @@ func (t *Translator) translateCreateDatabase(stmt *influxql.CreateDatabaseStatem
 	// Sanitize the database name
 	dbName := pgx.Identifier{stmt.Name}.Sanitize()
 	return fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", dbName), nil
+}
+
+func (t *Translator) translateShowSeries(stmt *influxql.ShowSeriesStatement) (string, error) {
+	var sql strings.Builder
+
+	// Get measurement name if specified
+	var measurement string
+	if len(stmt.Sources) > 0 {
+		var err error
+		measurement, err = t.getMeasurementName(stmt.Sources[0])
+		if err != nil {
+			return "", err
+		}
+	}
+
+	// Query to get distinct tag combinations (series)
+	// A series in InfluxDB is a unique combination of measurement + tag set
+	if measurement != "" {
+		// Get tag columns for this measurement
+		tableName := pgx.Identifier{t.database, measurement}.Sanitize()
+		sql.WriteString(fmt.Sprintf(`
+			SELECT DISTINCT
+				'%s' || ',' || string_agg(column_name || '=' || COALESCE(pg_catalog.pg_get_expr(adbin, adrelid), ''), ',' ORDER BY column_name) AS key
+			FROM %s
+			CROSS JOIN (
+				SELECT column_name
+				FROM %s._timeflux_metadata
+				WHERE measurement = '%s' AND is_tag = true
+				ORDER BY column_name
+			) tags
+			GROUP BY time
+			LIMIT 100
+		`, measurement, tableName, pgx.Identifier{t.database}.Sanitize(), measurement))
+	} else {
+		// Show series across all measurements
+		sql.WriteString(fmt.Sprintf(`
+			SELECT measurement || ',' || column_name AS key
+			FROM %s._timeflux_metadata
+			WHERE is_tag = true
+			ORDER BY measurement, column_name
+		`, pgx.Identifier{t.database}.Sanitize()))
+	}
+
+	return sql.String(), nil
+}
+
+func (t *Translator) translateDropSeries(stmt *influxql.DropSeriesStatement) (string, error) {
+	// DROP SERIES deletes all data points matching the WHERE condition
+	var sql strings.Builder
+
+	// Get measurement name if specified
+	var measurement string
+	if len(stmt.Sources) > 0 {
+		var err error
+		measurement, err = t.getMeasurementName(stmt.Sources[0])
+		if err != nil {
+			return "", err
+		}
+	} else {
+		return "", fmt.Errorf("DROP SERIES requires FROM clause with measurement name")
+	}
+
+	tableName := pgx.Identifier{t.database, measurement}.Sanitize()
+	sql.WriteString(fmt.Sprintf("DELETE FROM %s", tableName))
+
+	// Add WHERE condition if specified
+	if stmt.Condition != nil {
+		sql.WriteString(" WHERE ")
+		if err := t.translateCondition(stmt.Condition, &sql); err != nil {
+			return "", err
+		}
+	} else {
+		// If no condition, delete all data from the measurement
+		// (but keep the table structure)
+		sql.WriteString(" WHERE true")
+	}
+
+	return sql.String(), nil
+}
+
+func (t *Translator) translateDropMeasurement(stmt *influxql.DropMeasurementStatement) (string, error) {
+	// DROP MEASUREMENT drops the entire table
+	// Note: Metadata cleanup should be handled separately if needed
+	tableName := pgx.Identifier{t.database, stmt.Name}.Sanitize()
+	return fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", tableName), nil
+}
+
+func (t *Translator) translateDropDatabase(stmt *influxql.DropDatabaseStatement) (string, error) {
+	// DROP DATABASE drops the entire schema
+	dbName := pgx.Identifier{stmt.Name}.Sanitize()
+	return fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", dbName), nil
 }
 
