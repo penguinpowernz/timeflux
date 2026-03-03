@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -58,7 +59,8 @@ func (sm *SchemaManager) indexWorker() {
 	defer sm.indexWorkers.Done()
 
 	for job := range sm.indexQueue {
-		ctx := context.Background()
+		// Use a timeout to prevent a slow CREATE INDEX from stalling the worker indefinitely
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		if job.isTag {
 			indexName := fmt.Sprintf("%s_%s_idx", job.measurement, job.columnName)
 			_, err := sm.pool.Exec(ctx, fmt.Sprintf(
@@ -74,6 +76,7 @@ func (sm *SchemaManager) indexWorker() {
 				log.Printf("Created index on %s.%s(%s)", job.database, job.measurement, job.columnName)
 			}
 		}
+		cancel()
 	}
 }
 
@@ -283,30 +286,55 @@ func (sm *SchemaManager) loadMetadata(ctx context.Context, database string) erro
 	}
 	defer rows.Close()
 
+	// Collect updates without holding the lock (avoids holding lock during I/O)
+	type columnUpdate struct {
+		columnType string
+		isTag      bool
+	}
+	updates := make(map[string]map[string]columnUpdate) // measurement -> columnName -> update
+
 	for rows.Next() {
 		var measurement, columnName, columnType string
 		var isTag bool
 		if err := rows.Scan(&measurement, &columnName, &columnType, &isTag); err != nil {
 			return fmt.Errorf("failed to scan metadata row: %w", err)
 		}
+		if updates[measurement] == nil {
+			updates[measurement] = make(map[string]columnUpdate)
+		}
+		updates[measurement][columnName] = columnUpdate{columnType: columnType, isTag: isTag}
+	}
 
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Apply updates under write lock
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	for measurement, cols := range updates {
+		if sm.schemas[database] == nil {
+			sm.schemas[database] = make(map[string]*MeasurementSchema)
+		}
 		if sm.schemas[database][measurement] == nil {
 			sm.schemas[database][measurement] = &MeasurementSchema{
 				Tags:   make(map[string]bool),
 				Fields: make(map[string]string),
 			}
 		}
-
-		if isTag {
-			sm.schemas[database][measurement].Tags[columnName] = true
-			delete(sm.schemas[database][measurement].Fields, columnName)
-		} else {
-			sm.schemas[database][measurement].Fields[columnName] = columnType
-			delete(sm.schemas[database][measurement].Tags, columnName)
+		for columnName, upd := range cols {
+			if upd.isTag {
+				sm.schemas[database][measurement].Tags[columnName] = true
+				delete(sm.schemas[database][measurement].Fields, columnName)
+			} else {
+				sm.schemas[database][measurement].Fields[columnName] = upd.columnType
+				delete(sm.schemas[database][measurement].Tags, columnName)
+			}
 		}
 	}
 
-	return rows.Err()
+	return nil
 }
 
 // EnsureSchema ensures the schema exists for the given measurement with the specified tags and fields
@@ -427,12 +455,17 @@ func (sm *SchemaManager) ensureSchemaSlow(ctx context.Context, database, measure
 			if err := sm.ensureTagColumnTx(ctx, tx, database, measurement, tag); err != nil {
 				return err
 			}
-			// Queue index creation in background
-			sm.indexQueue <- indexJob{
+			// Queue index creation in background (non-blocking to avoid deadlock when queue is full)
+			select {
+			case sm.indexQueue <- indexJob{
 				database:    database,
 				measurement: measurement,
 				columnName:  tag,
 				isTag:       true,
+			}:
+			default:
+				log.Printf("Warning: index queue full, background index for %s.%s(%s) will not be created",
+					database, measurement, tag)
 			}
 		}
 

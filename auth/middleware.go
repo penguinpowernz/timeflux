@@ -1,11 +1,34 @@
 package auth
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
+
+// validateDatabaseIdentifier validates that a database name is safe to use as a SQL identifier.
+// Allows alphanumeric characters and underscores; must start with a letter or underscore.
+func validateDatabaseIdentifier(name string) error {
+	if name == "" {
+		return fmt.Errorf("identifier cannot be empty")
+	}
+	if len(name) > 63 {
+		return fmt.Errorf("identifier too long (max 63 characters)")
+	}
+	first := name[0]
+	if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_') {
+		return fmt.Errorf("identifier must start with a letter or underscore")
+	}
+	for i := 1; i < len(name); i++ {
+		c := name[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return fmt.Errorf("identifier contains invalid character: %c", c)
+		}
+	}
+	return nil
+}
 
 // Middleware creates a Gin middleware that enforces authentication
 func Middleware(userManager *UserManager, enabled bool) gin.HandlerFunc {
@@ -87,6 +110,16 @@ func RequirePermission(userManager *UserManager, enabled bool, needWrite bool) g
 		if database == "" {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": "database parameter required",
+			})
+			c.Abort()
+			return
+		}
+
+		// Validate database name to prevent injection via query parameter
+		if err := validateDatabaseIdentifier(database); err != nil {
+			log.Printf("Invalid database parameter from user %s: %v", username, err)
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "invalid database name",
 			})
 			c.Abort()
 			return

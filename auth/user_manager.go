@@ -239,25 +239,29 @@ func (um *UserManager) Authenticate(ctx context.Context, username, password stri
 		SELECT password_hash FROM %s WHERE username = $1
 	`, pgx.Identifier{usersTableName}.Sanitize())
 
-	var hash string
-	err := um.pool.QueryRow(ctx, query, username).Scan(&hash)
+	// dummyHash is a pre-computed bcrypt hash used when the user doesn't exist.
+	// This ensures bcrypt is ALWAYS called on the same code path regardless of
+	// whether the user exists, preventing timing-based username enumeration.
+	const dummyHash = "$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYKKDq0.1im" // bcrypt hash of "dummy"
 
-	// Use a dummy hash if user doesn't exist to prevent timing attacks
-	// This ensures bcrypt is always called, making timing consistent
-	dummyHash := "$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYKKDq0.1im" // bcrypt hash of "dummy"
-
+	var storedHash string
+	userFound := true
+	err := um.pool.QueryRow(ctx, query, username).Scan(&storedHash)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			// User doesn't exist - still perform bcrypt to prevent timing attack
-			bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(password))
-			return false, nil
+			// User doesn't exist; use dummy hash so bcrypt timing is identical
+			storedHash = dummyHash
+			userFound = false
+		} else {
+			return false, fmt.Errorf("failed to query user: %w", err)
 		}
-		return false, fmt.Errorf("failed to query user: %w", err)
 	}
 
-	// Compare password (always performed regardless of user existence)
-	err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
-	return err == nil, nil
+	// Always perform bcrypt comparison (same code path whether user exists or not)
+	bcryptErr := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(password))
+
+	// Only return true if user was found AND password matched
+	return userFound && bcryptErr == nil, nil
 }
 
 // CheckPermission checks if a user has the requested permission for a database/measurement

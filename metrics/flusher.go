@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -313,6 +314,13 @@ func (f *Flusher) writeMeasurement(ctx context.Context, database, measurement st
 		return fmt.Errorf("failed to ensure table exists: %w", err)
 	}
 
+	// Build sanitized column identifiers for the INSERT statement
+	sanitizedCols := make([]string, len(columns))
+	sanitizedCols[0] = pgx.Identifier{"time"}.Sanitize()
+	for i, col := range columns[1:] {
+		sanitizedCols[i+1] = pgx.Identifier{col}.Sanitize()
+	}
+
 	// Use simple INSERT statements (metrics volume is low)
 	log.Printf("Inserting %d points into %s", len(points), tableName)
 	for pointIdx, point := range points {
@@ -334,8 +342,8 @@ func (f *Flusher) writeMeasurement(ctx context.Context, database, measurement st
 
 		insertSQL := fmt.Sprintf(
 			"INSERT INTO %s (%s) VALUES (%s)",
-			tableName,
-			strings.Join(columns, ", "),
+			pgx.Identifier{database, measurement}.Sanitize(),
+			strings.Join(sanitizedCols, ", "),
 			strings.Join(placeholders, ", "),
 		)
 
@@ -353,50 +361,54 @@ func (f *Flusher) writeMeasurement(ctx context.Context, database, measurement st
 func (f *Flusher) ensureMetricsTable(ctx context.Context, database, measurement string, columns []string) error {
 	log.Printf("Ensuring metrics table %s.%s exists", database, measurement)
 
+	sanitizedSchema := pgx.Identifier{database}.Sanitize()
+	sanitizedTable := pgx.Identifier{database, measurement}.Sanitize()
+
 	// Create schema if it doesn't exist
-	createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", database)
+	createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", sanitizedSchema)
 	if _, err := f.pool.Exec(ctx, createSchemaSQL); err != nil {
 		return fmt.Errorf("failed to create schema: %w", err)
 	}
 	log.Printf("Schema %s ready", database)
 
 	// Create table if it doesn't exist
-	tableName := fmt.Sprintf("%s.%s", database, measurement)
 	createTableSQL := fmt.Sprintf(
 		"CREATE TABLE IF NOT EXISTS %s (time TIMESTAMPTZ NOT NULL)",
-		tableName,
+		sanitizedTable,
 	)
 	if _, err := f.pool.Exec(ctx, createTableSQL); err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
-	log.Printf("Table %s ready", tableName)
+	log.Printf("Table %s.%s ready", database, measurement)
 
-	// Ensure it's a hypertable
+	// Ensure it's a hypertable — create_hypertable requires an unquoted string literal
+	// for the table name argument; strip outer quotes from sanitized form
+	unquotedTable := strings.ReplaceAll(sanitizedTable, `"`, ``)
 	hypertableSQL := fmt.Sprintf(
 		"SELECT create_hypertable('%s', 'time', if_not_exists => TRUE)",
-		tableName,
+		unquotedTable,
 	)
-	log.Printf("Creating hypertable for %s...", tableName)
+	log.Printf("Creating hypertable for %s.%s...", database, measurement)
 	if _, err := f.pool.Exec(ctx, hypertableSQL); err != nil {
 		// Ignore error if already a hypertable
 		if !strings.Contains(err.Error(), "already a hypertable") {
-			log.Printf("Warning: failed to create hypertable for %s: %v", tableName, err)
+			log.Printf("Warning: failed to create hypertable for %s.%s: %v", database, measurement, err)
 		}
 	}
-	log.Printf("Hypertable %s ready", tableName)
+	log.Printf("Hypertable %s.%s ready", database, measurement)
 
 	// Add missing columns
 	for _, col := range columns[1:] { // Skip 'time' column
 		alterSQL := fmt.Sprintf(
 			"ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s BIGINT",
-			tableName,
-			col,
+			sanitizedTable,
+			pgx.Identifier{col}.Sanitize(),
 		)
 		if _, err := f.pool.Exec(ctx, alterSQL); err != nil {
 			return fmt.Errorf("failed to add column %s: %w", col, err)
 		}
 	}
-	log.Printf("All columns added to %s", tableName)
+	log.Printf("All columns added to %s.%s", database, measurement)
 
 	return nil
 }
@@ -404,7 +416,7 @@ func (f *Flusher) ensureMetricsTable(ctx context.Context, database, measurement 
 // ensureInternalDatabaseExists creates the _internal schema if it doesn't exist
 func (f *Flusher) ensureInternalDatabaseExists() error {
 	ctx := context.Background()
-	createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", internalDatabase)
+	createSchemaSQL := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", pgx.Identifier{internalDatabase}.Sanitize())
 	if _, err := f.pool.Exec(ctx, createSchemaSQL); err != nil {
 		return fmt.Errorf("failed to create _internal schema: %w", err)
 	}

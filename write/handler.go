@@ -73,11 +73,15 @@ func (h *Handler) Handle(c *gin.Context) {
 		}
 	}
 
+	// Limit request body size to 32MB to prevent memory exhaustion
+	const maxBodySize = 32 * 1024 * 1024
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodySize)
+
 	// Read request body
 	body, err := c.GetRawData()
 	if err != nil {
 		log.Printf("Error reading request body: %v", err)
-		c.String(http.StatusBadRequest, "Failed to read request body")
+		c.String(http.StatusRequestEntityTooLarge, "Request body too large (max 32MB)")
 		return
 	}
 
