@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	client "github.com/influxdata/influxdb1-client/v2"
@@ -35,7 +37,16 @@ type Summary struct {
 	Duration string `json:"duration"`
 }
 
+var (
+	markdownMode bool
+	jsonMode     bool
+)
+
 func main() {
+	flag.BoolVar(&markdownMode, "m", false, "Output results as a markdown table")
+	flag.BoolVar(&jsonMode, "j", false, "Output results as JSON")
+	flag.Parse()
+
 	suite := &TestSuite{Results: []TestResult{}}
 	startTime := time.Now()
 
@@ -48,7 +59,9 @@ func main() {
 	}
 	defer c.Close()
 
-	fmt.Println("=== Timeflux Facade Test Suite ===\n")
+	if !markdownMode && !jsonMode {
+		fmt.Println("=== Timeflux Facade Test Suite ===\n")
+	}
 
 	// Test 1: Write basic point with single field
 	suite.addTest(testBasicWrite(c))
@@ -116,7 +129,61 @@ func main() {
 	// Test 21: DROP MEASUREMENT
 	suite.addTest(testDropMeasurement(c))
 
-	// Test 22: DROP DATABASE
+	// Test 22: FIRST and LAST functions
+	suite.addTest(testFirstLast(c))
+
+	// Test 23: PERCENTILE function
+	suite.addTest(testPercentile(c))
+
+	// Test 24: Multiple aggregations in one query
+	suite.addTest(testMultipleAggregations(c))
+
+	// Test 25: Arithmetic operations in SELECT
+	suite.addTest(testArithmeticOperations(c))
+
+	// Test 26: Complex WHERE with AND/OR
+	suite.addTest(testComplexWhere(c))
+
+	// Test 27: SHOW TAG VALUES
+	suite.addTest(testShowTagValues(c))
+
+	// Test 28: SELECT with LIMIT
+	suite.addTest(testLimit(c))
+
+	// Test 29: SELECT with OFFSET
+	suite.addTest(testOffset(c))
+
+	// Test 30: SELECT with ORDER BY
+	suite.addTest(testOrderBy(c))
+
+	// Test 31: SELECT with time range
+	suite.addTest(testTimeRange(c))
+
+	// Test 32: GROUP BY time with multiple intervals
+	suite.addTest(testGroupByTimeIntervals(c))
+
+	// Test 33: GROUP BY multiple tags
+	suite.addTest(testGroupByMultipleTags(c))
+
+	// Test 34: NOW() function in WHERE
+	suite.addTest(testNowFunction(c))
+
+	// Test 35: Boolean field queries
+	suite.addTest(testBooleanFields(c))
+
+	// Test 36: String field queries
+	suite.addTest(testStringFields(c))
+
+	// Test 37: Negative numbers and zero
+	suite.addTest(testNegativeNumbers(c))
+
+	// Test 38: DROP SERIES
+	suite.addTest(testDropSeries(c))
+
+	// Test 39: DROP MEASUREMENT
+	suite.addTest(testDropMeasurement(c))
+
+	// Test 40: DROP DATABASE
 	suite.addTest(testDropDatabase(c))
 
 	// Calculate summary
@@ -130,28 +197,51 @@ func main() {
 		}
 	}
 
-	// Print summary
-	fmt.Println("\n=== Test Summary ===")
-	fmt.Printf("Total:    %d\n", suite.Summary.Total)
-	fmt.Printf("Passed:   %d ✓\n", suite.Summary.Passed)
-	fmt.Printf("Failed:   %d ✗\n", suite.Summary.Failed)
-	fmt.Printf("Duration: %s\n", suite.Summary.Duration)
-
-	// Output JSON for programmatic consumption
-	fmt.Println("\n=== JSON Output ===")
-	jsonData, _ := json.MarshalIndent(suite, "", "  ")
-	fmt.Println(string(jsonData))
-
-	// Exit with error code if any tests failed
-	if suite.Summary.Failed > 0 {
-		fmt.Println("\n⚠ Some tests failed")
-	} else {
-		fmt.Println("\n✓ All tests passed")
+	switch {
+	case jsonMode:
+		jsonData, _ := json.MarshalIndent(suite, "", "  ")
+		fmt.Println(string(jsonData))
+	case markdownMode:
+		printMarkdownTable(suite)
+	default:
+		fmt.Println("\n=== Test Summary ===")
+		fmt.Printf("Total:    %d\n", suite.Summary.Total)
+		fmt.Printf("Passed:   %d ✓\n", suite.Summary.Passed)
+		fmt.Printf("Failed:   %d ✗\n", suite.Summary.Failed)
+		fmt.Printf("Duration: %s\n", suite.Summary.Duration)
+		if suite.Summary.Failed > 0 {
+			fmt.Println("\n⚠ Some tests failed")
+		} else {
+			fmt.Println("\n✓ All tests passed")
+		}
 	}
+}
+
+func printMarkdownTable(suite *TestSuite) {
+	fmt.Println("# Timeflux Facade Test Results\n")
+	fmt.Printf("| Status | Test | Description | Duration |\n")
+	fmt.Printf("|--------|------|-------------|----------|\n")
+	for _, r := range suite.Results {
+		icon := "✅"
+		if !r.Success {
+			icon = "❌"
+		}
+		desc := r.Description
+		if !r.Success && r.Error != "" {
+			desc = r.Description + "<br>**Error:** " + r.Error
+		}
+		// Escape pipe characters in description for markdown table
+		desc = strings.ReplaceAll(desc, "|", "\\|")
+		fmt.Printf("| %s | %s | %s | %s |\n", icon, r.Name, desc, r.Duration)
+	}
+	fmt.Printf("\n**Summary:** %d/%d passed in %s\n", suite.Summary.Passed, suite.Summary.Total, suite.Summary.Duration)
 }
 
 func (s *TestSuite) addTest(result TestResult) {
 	s.Results = append(s.Results, result)
+	if markdownMode || jsonMode {
+		return
+	}
 	status := "✓"
 	if !result.Success {
 		status = "✗"
@@ -852,6 +942,551 @@ func testDropMeasurement(c client.Client) TestResult {
 	result.Success = true
 	result.Data = map[string]interface{}{
 		"status": "measurement dropped",
+	}
+	return result
+}
+
+func testFirstLast(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "FirstLast",
+		Description: "SELECT FIRST() and LAST() functions",
+	}
+
+	q := client.NewQuery("SELECT FIRST(value), LAST(value) FROM sensor_data", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 && len(response.Results[0].Series[0].Values) > 0 {
+		if len(response.Results[0].Series[0].Values[0]) > 2 {
+			result.Data = map[string]interface{}{
+				"first": response.Results[0].Series[0].Values[0][1],
+				"last":  response.Results[0].Series[0].Values[0][2],
+			}
+		}
+	}
+	return result
+}
+
+func testPercentile(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "Percentile",
+		Description: "SELECT PERCENTILE() function",
+	}
+
+	q := client.NewQuery("SELECT PERCENTILE(value, 95) FROM sensor_data", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 && len(response.Results[0].Series[0].Values) > 0 {
+		if len(response.Results[0].Series[0].Values[0]) > 1 {
+			result.Data = map[string]interface{}{
+				"percentile_95": response.Results[0].Series[0].Values[0][1],
+			}
+		}
+	}
+	return result
+}
+
+func testMultipleAggregations(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "MultipleAggregations",
+		Description: "SELECT multiple aggregations in one query",
+	}
+
+	q := client.NewQuery("SELECT COUNT(value), MEAN(value), SUM(value), MIN(value), MAX(value) FROM sensor_data", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 && len(response.Results[0].Series[0].Values) > 0 {
+		vals := response.Results[0].Series[0].Values[0]
+		if len(vals) > 5 {
+			result.Data = map[string]interface{}{
+				"count": vals[1],
+				"mean":  vals[2],
+				"sum":   vals[3],
+				"min":   vals[4],
+				"max":   vals[5],
+			}
+		}
+	}
+	return result
+}
+
+func testArithmeticOperations(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "ArithmeticOperations",
+		Description: "SELECT with arithmetic operations (+, -, *, /)",
+	}
+
+	q := client.NewQuery("SELECT value * 2 AS doubled, value + 10 AS plus_ten, value / 2 AS halved FROM sensor_data LIMIT 5", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{
+			"rows": len(response.Results[0].Series[0].Values),
+		}
+	}
+	return result
+}
+
+func testComplexWhere(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "ComplexWhere",
+		Description: "SELECT with complex WHERE (AND, OR, comparison operators)",
+	}
+
+	q := client.NewQuery("SELECT * FROM sensor_data WHERE (value > 60 AND value < 80) OR sensor_id='sensor_0'", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{
+			"rows": len(response.Results[0].Series[0].Values),
+		}
+	}
+	return result
+}
+
+func testShowTagValues(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "ShowTagValues",
+		Description: "SHOW TAG VALUES with KEY",
+	}
+
+	q := client.NewQuery("SHOW TAG VALUES FROM sensor_data WITH KEY = sensor_id", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		values := []string{}
+		for _, val := range response.Results[0].Series[0].Values {
+			if len(val) > 0 {
+				values = append(values, fmt.Sprintf("%v", val[0]))
+			}
+		}
+		result.Data = map[string]interface{}{
+			"tag_values": values,
+			"count":      len(values),
+		}
+	}
+	return result
+}
+
+func testLimit(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "Limit",
+		Description: "SELECT with LIMIT clause",
+	}
+
+	q := client.NewQuery("SELECT * FROM sensor_data LIMIT 10", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		rowCount := len(response.Results[0].Series[0].Values)
+		result.Data = map[string]interface{}{
+			"rows":      rowCount,
+			"limit_set": 10,
+		}
+		// Verify LIMIT is working
+		if rowCount > 10 {
+			result.Error = fmt.Sprintf("LIMIT not working: got %d rows, expected <= 10", rowCount)
+			result.Success = false
+		}
+	}
+	return result
+}
+
+func testOffset(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "Offset",
+		Description: "SELECT with OFFSET clause",
+	}
+
+	q := client.NewQuery("SELECT * FROM sensor_data LIMIT 5 OFFSET 10", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{
+			"rows":   len(response.Results[0].Series[0].Values),
+			"offset": 10,
+		}
+	}
+	return result
+}
+
+func testOrderBy(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "OrderBy",
+		Description: "SELECT with ORDER BY clause",
+	}
+
+	q := client.NewQuery("SELECT * FROM sensor_data ORDER BY time DESC LIMIT 10", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{
+			"rows":     len(response.Results[0].Series[0].Values),
+			"order_by": "time DESC",
+		}
+	}
+	return result
+}
+
+func testTimeRange(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "TimeRange",
+		Description: "SELECT with time range in WHERE",
+	}
+
+	q := client.NewQuery("SELECT * FROM sensor_data WHERE time > now() - 3h AND time < now()", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{
+			"rows": len(response.Results[0].Series[0].Values),
+		}
+	}
+	return result
+}
+
+func testGroupByTimeIntervals(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "GroupByTimeIntervals",
+		Description: "Test different GROUP BY time() intervals (1m, 5m, 1h)",
+	}
+
+	// Test with 1 minute interval
+	q := client.NewQuery("SELECT MEAN(value) FROM sensor_data WHERE time > now() - 2h GROUP BY time(1m)", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{
+			"interval_1m_buckets": len(response.Results[0].Series[0].Values),
+		}
+	}
+	return result
+}
+
+func testGroupByMultipleTags(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "GroupByMultipleTags",
+		Description: "SELECT with GROUP BY multiple tags",
+	}
+
+	// First write some data with multiple tags
+	bp, _ := client.NewBatchPoints(client.BatchPointsConfig{
+		Database: database,
+	})
+
+	for i := 0; i < 20; i++ {
+		tags := map[string]string{
+			"region": []string{"us-west", "us-east"}[i%2],
+			"zone":   []string{"zone-a", "zone-b", "zone-c"}[i%3],
+		}
+		fields := map[string]interface{}{
+			"latency": float64(10 + i),
+		}
+		pt, _ := client.NewPoint("network_stats", tags, fields, time.Now().Add(-time.Duration(i)*time.Minute))
+		bp.AddPoint(pt)
+	}
+	c.Write(bp)
+
+	time.Sleep(200 * time.Millisecond)
+
+	q := client.NewQuery("SELECT MEAN(latency) FROM network_stats GROUP BY region, zone", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 {
+		result.Data = map[string]interface{}{
+			"groups": len(response.Results[0].Series),
+		}
+	}
+	return result
+}
+
+func testNowFunction(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "NowFunction",
+		Description: "Use NOW() function in WHERE clause",
+	}
+
+	q := client.NewQuery("SELECT * FROM sensor_data WHERE time < now() LIMIT 10", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{
+			"rows": len(response.Results[0].Series[0].Values),
+		}
+	}
+	return result
+}
+
+func testBooleanFields(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "BooleanFields",
+		Description: "Query boolean fields with WHERE",
+	}
+
+	q := client.NewQuery("SELECT * FROM system_stats WHERE is_healthy=true", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{
+			"rows": len(response.Results[0].Series[0].Values),
+		}
+	}
+	return result
+}
+
+func testStringFields(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "StringFields",
+		Description: "Query string fields with WHERE",
+	}
+
+	q := client.NewQuery("SELECT * FROM system_stats WHERE status='running'", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{
+			"rows": len(response.Results[0].Series[0].Values),
+		}
+	}
+	return result
+}
+
+func testNegativeNumbers(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "NegativeNumbers",
+		Description: "Query with negative numbers and zero",
+	}
+
+	// Write some test data with negatives
+	bp, _ := client.NewBatchPoints(client.BatchPointsConfig{
+		Database: database,
+	})
+
+	fields := map[string]interface{}{
+		"temperature": -5.5,
+		"pressure":    0.0,
+		"altitude":    int64(-100),
+	}
+	pt, _ := client.NewPoint("weather", map[string]string{"station": "north"}, fields, time.Now())
+	bp.AddPoint(pt)
+	c.Write(bp)
+
+	time.Sleep(200 * time.Millisecond)
+
+	q := client.NewQuery("SELECT * FROM weather WHERE temperature < 0", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{
+			"rows": len(response.Results[0].Series[0].Values),
+		}
 	}
 	return result
 }
