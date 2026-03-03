@@ -15,6 +15,7 @@ type Config struct {
 	Logging  LoggingConfig  `yaml:"logging"`
 	WAL      WALConfig      `yaml:"wal"`
 	Auth     AuthConfig     `yaml:"auth"`
+	Metrics  MetricsConfig  `yaml:"metrics"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -55,6 +56,12 @@ type WALConfig struct {
 // AuthConfig holds authentication configuration
 type AuthConfig struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+// MetricsConfig holds metrics configuration
+type MetricsConfig struct {
+	StoreInternal bool   `yaml:"store_internal"`
+	FlushInterval string `yaml:"flush_interval"`
 }
 
 // Load reads and parses the configuration file
@@ -105,6 +112,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.WAL.SegmentCacheSize == 0 {
 		cfg.WAL.SegmentCacheSize = 2
+	}
+	if cfg.Metrics.FlushInterval == "" {
+		cfg.Metrics.FlushInterval = "10s"
 	}
 
 	return &cfg, nil

@@ -84,6 +84,19 @@ func main() {
 		log.Printf("Authentication disabled")
 	}
 
+	// Initialize metrics flusher if enabled
+	var metricsFlusher *metrics.Flusher
+	if cfg.Metrics.StoreInternal {
+		flushInterval, err := time.ParseDuration(cfg.Metrics.FlushInterval)
+		if err != nil {
+			log.Fatalf("Invalid metrics flush interval '%s': %v", cfg.Metrics.FlushInterval, err)
+		}
+		metricsFlusher = metrics.NewFlusher(pool, flushInterval)
+		metricsFlusher.Start()
+	} else {
+		log.Printf("Internal metrics storage disabled")
+	}
+
 	// Create HTTP handlers
 	writeHandler := write.NewHandler(pool, schemaManager, cfg.Database.AutoCreateDatabases)
 	queryHandler := query.NewHandler(pool)
@@ -183,6 +196,12 @@ func main() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Server shutdown error: %v", err)
+	}
+
+	// Shutdown metrics flusher if enabled
+	if metricsFlusher != nil {
+		log.Printf("Shutting down metrics flusher...")
+		metricsFlusher.Shutdown()
 	}
 
 	// Shutdown WAL buffer if enabled
