@@ -403,6 +403,53 @@ Field types are inferred from InfluxDB line protocol:
 - `GET /health` - Health status (returns JSON)
 - `GET /metrics` - Prometheus-style metrics (JSON format)
 
+## Feature Compatibility
+
+| Status | Test | Description | Duration |
+|--------|------|-------------|----------|
+| ✅ | BasicWrite | Write single point with one field | 4.934664ms |
+| ✅ | MultiFieldWrite | Write point with multiple fields of different types | 3.484967ms |
+| ✅ | TaggedWrite | Write points with tags | 2.047056ms |
+| ✅ | BatchWrite | Write batch of 100 points | 5.449964ms |
+| ✅ | AllDataTypes | Write point with all supported data types | 25.702077ms |
+| ✅ | SimpleSelect | SELECT * FROM measurement | 2.802349ms |
+| ✅ | SelectWithWhere | SELECT with WHERE clause filtering tags | 3.248763ms |
+| ✅ | SelectMean | SELECT MEAN() aggregation | 4.391141ms |
+| ✅ | GroupByTime | SELECT with GROUP BY time(5m) | 5.843596ms |
+| ✅ | GroupByTag | SELECT with GROUP BY tag | 7.288836ms |
+| ✅ | Count | SELECT COUNT(*) | 2.856268ms |
+| ✅ | Sum | SELECT SUM() | 3.338893ms |
+| ✅ | MinMax | SELECT MIN() and MAX() | 3.986252ms |
+| ✅ | ShowMeasurements | SHOW MEASUREMENTS | 1.693209ms |
+| ✅ | ShowTagKeys | SHOW TAG KEYS | 1.23289ms |
+| ✅ | ShowFieldKeys | SHOW FIELD KEYS | 1.18789ms |
+| ✅ | CreateDatabase | CREATE DATABASE | 753.651µs |
+| ✅ | ShowDatabases | SHOW DATABASES | 2.302676ms |
+| ✅ | ShowSeries | SHOW SERIES | 2.187918ms |
+| ✅ | DropSeries | DROP SERIES with WHERE clause | 107.174396ms |
+| ✅ | DropMeasurement | DROP MEASUREMENT | 104.11461ms |
+| ✅ | FirstLast | SELECT FIRST() and LAST() functions | 1.853137ms |
+| ❌ | Percentile | SELECT PERCENTILE() function<br>**Error:** Failed to execute query | 3.868787ms |
+| ✅ | MultipleAggregations | SELECT multiple aggregations in one query | 3.625738ms |
+| ✅ | ArithmeticOperations | SELECT with arithmetic operations (+, -, *, /) | 2.208645ms |
+| ❌ | ComplexWhere | SELECT with complex WHERE (AND, OR, comparison operators)<br>**Error:** Failed to execute query | 668.31µs |
+| ✅ | ShowTagValues | SHOW TAG VALUES with KEY | 1.587239ms |
+| ✅ | Limit | SELECT with LIMIT clause | 965.766µs |
+| ✅ | Offset | SELECT with OFFSET clause | 909.416µs |
+| ✅ | OrderBy | SELECT with ORDER BY clause | 1.045277ms |
+| ✅ | TimeRange | SELECT with time range in WHERE | 2.606991ms |
+| ✅ | GroupByTimeIntervals | Test different GROUP BY time() intervals (1m, 5m, 1h) | 2.212382ms |
+| ✅ | GroupByMultipleTags | SELECT with GROUP BY multiple tags | 207.063922ms |
+| ✅ | NowFunction | Use NOW() function in WHERE clause | 1.146985ms |
+| ✅ | BooleanFields | Query boolean fields with WHERE | 1.504378ms |
+| ✅ | StringFields | Query string fields with WHERE | 1.547606ms |
+| ✅ | NegativeNumbers | Query with negative numbers and zero | 203.726255ms |
+| ✅ | DropSeries | DROP SERIES with WHERE clause | 109.933283ms |
+| ✅ | DropMeasurement | DROP MEASUREMENT | 103.416551ms |
+| ✅ | DropDatabase | DROP DATABASE | 104.336478ms |
+
+**Summary:** 38/40 passed in 1.551928168s
+
 ## Project Structure
 
 ```
