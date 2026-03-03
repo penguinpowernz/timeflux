@@ -457,9 +457,6 @@ Field types are inferred from InfluxDB line protocol:
 
 ## Feature Compatibility
 
-
-# Timeflux Facade Test Results
-
 | Status | Test | Description | Duration |
 |--------|------|-------------|----------|
 | ✅ | BasicWrite | Write single point with one field | 6.801163ms |
