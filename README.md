@@ -2,11 +2,15 @@
 
 Timeflux is a Go-based HTTP service that implements the InfluxDB v1 API, translating requests to TimescaleDB on the backend. This allows existing systems using InfluxDB clients to seamlessly switch to TimescaleDB without code changes.
 
+You can use this to help migrate away from InfluxDB towards TimescaleDB or keep it as a structured layer on top of TimescaleDB.
+
 ## Features
 
 - **InfluxDB v1 API Compatible**: Supports write and query endpoints
 - **Line Protocol Support**: Parse and write InfluxDB line protocol data
 - **InfluxQL Query Support**: Translate InfluxQL queries to PostgreSQL SQL
+- **Influx CLI Support**: Use the Influx CLI tool to interact with TimescaleDB
+- **Grafana Support**: Use with Grafana like you would Influx
 - **Write-Ahead Log (WAL)**: 10x faster writes with crash recovery and CRC32 checksums
 - **Dynamic Schema Evolution**: Automatically creates tables and columns as new measurements, tags, and fields appear
 - **Background Index Creation**: Tag indexes created asynchronously to avoid blocking writes
@@ -41,7 +45,7 @@ When a write contains new tags or fields not seen before, the service automatica
 
 - Go 1.21 or later
 - PostgreSQL 12+ with TimescaleDB extension
-- Docker (optional, for running TimescaleDB)
+- Docker (optional, for instantly running combined TimescaleDB and Timeflux)
 
 ### Quick Start with Docker Compose
 
@@ -443,14 +447,11 @@ Field types are inferred from InfluxDB line protocol:
 
 ### Future Enhancements
 - JWT/Bearer token authentication
-- Fine-grained measurement extraction from queries for permission checks
-- Multiple instances with shared metadata
-- Query result caching
-- Rate limiting
-- Broader InfluxQL support
-- Prometheus metrics endpoint (currently JSON)
-- Admin API for schema inspection
-- User session management and audit logging
+- Tag based permissions
+- Multi instance for HA setups
+- Replica awareness for distributed reads with writing to the master
+- Support entire InfluxDB function set
+- Store metrics in an "_internal" database like InfluxDB
 
 ## Example: Using with Telegraf
 
@@ -527,22 +528,15 @@ Check logs for unsupported InfluxQL features. The translator currently supports 
 
 MIT License
 
-## Development
+## Motivation
 
-### Build Commands
+I made this tool because I love the InfluxDB v1 interface - Influx Line Protocol and InfluxQL.  But I grew to dislike the
+backing database, being too inflexible to delete rows without crashing my InfluxCloud cluster.  However PostgresQL can also
+be a beast despite or because of its infinite utility.  Timeflux creates a nice layer providing the best of both worlds.
 
-```bash
-make build        # Build binary to bin/timeflux
-make clean        # Remove built binaries
-make test         # Run tests
-make run          # Build and run
-
-make up           # Start Docker Compose services
-make down         # Stop Docker Compose services
-make logs         # Follow timeflux logs
-make reup         # Rebuild and restart timeflux container
-make dcl          # Stop and remove volumes
-```
+I hope this can be of help to others with aging InfluxDB installs who don't want to change all their infra and tooling to
+switch databases.  I used claude to help develop this, monitoring it closely and driving it to make the correct architectural
+decisions while relying on it for technical advice, and options.
 
 For developers and AI assistants working on this project, see [CLAUDE.md](CLAUDE.md) for:
 - Architecture overview
