@@ -350,38 +350,90 @@ curl -G 'http://localhost:8086/query?db=mydb' \
 
 ## Supported InfluxQL Features
 
-### Aggregate Functions
-- `mean()` → `AVG()`
-- `count()` → `COUNT()`
-- `sum()` → `SUM()`
-- `max()` → `MAX()`
-- `min()` → `MIN()`
+### Functions
 
-### Time Functions
-- `GROUP BY time(5m)` → `time_bucket('5 minutes', time)`
-- `now()` → `NOW()`
+| | InfluxQL | PostgreSQL / TimescaleDB Analog | Notes | Difficulty |
+|---|---|---|---|---|
+| ✅ | `mean(field)` | `AVG(field)` | | Easy |
+| ✅ | `count(field)` | `COUNT(field)` | | Easy |
+| ✅ | `sum(field)` | `SUM(field)` | | Easy |
+| ✅ | `min(field)` | `MIN(field)` | | Easy |
+| ✅ | `max(field)` | `MAX(field)` | | Easy |
+| ✅ | `stddev(field)` | `STDDEV(field)` | | Easy |
+| ✅ | `median(field)` | `percentile_cont(0.5) WITHIN GROUP (ORDER BY field)` | | Easy |
+| ✅ | `spread(field)` | `MAX(field) - MIN(field)` | | Easy |
+| ✅ | `mode(field)` | `MODE() WITHIN GROUP (ORDER BY field)` | | Easy |
+| ❌ | `distinct(field)` | `COUNT(DISTINCT field)` | | Easy |
+| ✅ | `first(field)` | `FIRST(field, time)` | TimescaleDB function | Easy |
+| ✅ | `last(field)` | `LAST(field, time)` | TimescaleDB function | Easy |
+| ✅ | `percentile(field, N)` | `percentile_cont(N/100) WITHIN GROUP (ORDER BY field)` | N is 0–100 in InfluxQL | Easy |
+| ❌ | `top(field, N)` | Subquery with `ORDER BY field DESC LIMIT N` | | Medium |
+| ❌ | `bottom(field, N)` | Subquery with `ORDER BY field ASC LIMIT N` | | Medium |
+| ❌ | `sample(field, N)` | Subquery with `ORDER BY RANDOM() LIMIT N` | | Medium |
+| ✅ | `now()` | `NOW()` | | Easy |
+| ✅ | `abs(field)` | `ABS(field)` | | Easy |
+| ✅ | `ceil(field)` | `CEIL(field)` | | Easy |
+| ✅ | `floor(field)` | `FLOOR(field)` | | Easy |
+| ✅ | `round(field)` | `ROUND(field)` | | Easy |
+| ✅ | `sqrt(field)` | `SQRT(field)` | | Easy |
+| ✅ | `pow(field, exp)` | `POWER(field, exp)` | | Easy |
+| ✅ | `exp(field)` | `EXP(field)` | | Easy |
+| ✅ | `ln(field)` | `LN(field)` | | Easy |
+| ✅ | `log(field, base)` | `LOG(base::numeric, field::numeric)` | Arg order swapped; both args cast to numeric | Easy |
+| ✅ | `log2(field)` | `LOG(2::numeric, field::numeric)` | | Easy |
+| ✅ | `log10(field)` | `LOG(10::numeric, field::numeric)` | | Easy |
+| ✅ | `sin(field)` | `SIN(field)` | Input in radians | Easy |
+| ✅ | `cos(field)` | `COS(field)` | Input in radians | Easy |
+| ✅ | `tan(field)` | `TAN(field)` | Input in radians | Easy |
+| ✅ | `asin(field)` | `ASIN(field)` | Input must be in [-1, 1] | Easy |
+| ✅ | `acos(field)` | `ACOS(field)` | Input must be in [-1, 1] | Easy |
+| ✅ | `atan(field)` | `ATAN(field)` | | Easy |
+| ✅ | `atan2(y, x)` | `ATAN2(y, x)` | Same arg order | Easy |
+| ❌ | `cumulative_sum(field)` | Window function with `SUM() OVER (ORDER BY time ROWS UNBOUNDED PRECEDING)` | | Medium |
+| ❌ | `derivative(field[, unit])` | `(field - LAG(field) OVER (...)) / time_diff` | Window function | Medium |
+| ❌ | `non_negative_derivative(field)` | `GREATEST(derivative, 0)` | | Medium |
+| ❌ | `difference(field)` | `field - LAG(field) OVER (ORDER BY time)` | Window function | Medium |
+| ❌ | `non_negative_difference(field)` | `GREATEST(difference, 0)` | | Medium |
+| ❌ | `moving_average(field, N)` | `AVG(field) OVER (ORDER BY time ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW)` | Window function | Medium |
+| ❌ | `elapsed(field[, unit])` | `EXTRACT(EPOCH FROM time - LAG(time) OVER (...))` | Window function | Medium |
+| ❌ | `integral(field[, unit])` | Trapezoidal rule via window functions | | Medium–Hard |
+| ❌ | `histogram(field, min, max, N)` | `WIDTH_BUCKET(field, min, max, N)` with GROUP BY | | Medium–Hard |
+| ❌ | `exponential_moving_average(field, N)` | Recursive CTE or PL/pgSQL | | Hard |
+| ❌ | `double_exponential_moving_average(field, N)` | Custom function | | Hard |
+| ❌ | `triple_exponential_moving_average(field, N)` | Custom function | | Hard |
+| ❌ | `triple_exponential_derivative(field, N)` | Custom function | | Hard |
+| ❌ | `relative_strength_index(field, N)` | Custom PL/pgSQL function | | Hard |
+| ❌ | `chande_momentum_oscillator(field, N)` | Custom PL/pgSQL function | | Hard |
+| ❌ | `kaufmans_efficiency_ratio(field, N)` | Custom PL/pgSQL function | | Hard |
+| ❌ | `kaufmans_adaptive_moving_average(field, N)` | Custom PL/pgSQL function | | Hard |
+| ❌ | `holt_winters(field, N, m)` | No direct analog — application-layer or PL/Python | Forecasting function | Very Hard |
+
+See [FUNCTIONS.md](FUNCTIONS.md) for translation strategies and implementation phases.
 
 ### Query Features
-- SELECT with fields and aggregations
-- WHERE clauses with comparison operators
-- GROUP BY time and tags
-- ORDER BY
-- LIMIT and OFFSET
 
-### Schema Queries
-- `SHOW MEASUREMENTS`
-- `SHOW TAG KEYS`
-- `SHOW FIELD KEYS`
-- `SHOW DATABASES`
-- `SHOW SERIES`
-
-### Database Management
-- `CREATE DATABASE {name}`
-- `DROP DATABASE {name}`
-
-### Data Management
-- `DROP SERIES FROM {measurement} WHERE {condition}` - Delete rows matching tag filters
-- `DROP MEASUREMENT {name}` - Delete entire measurement table
+| | Feature | Notes |
+|---|---|---|
+| ✅ | `SELECT` with fields and aggregations | |
+| ✅ | `WHERE` with comparison operators (`=`, `!=`, `<`, `>`, `<=`, `>=`) | |
+| ✅ | `WHERE` with `AND` / `OR` and parenthesized expressions | |
+| ✅ | `GROUP BY time(interval)` | Maps to `time_bucket()` |
+| ✅ | `GROUP BY tag` | |
+| ✅ | `ORDER BY` | |
+| ✅ | `LIMIT` / `OFFSET` | |
+| ✅ | `SHOW MEASUREMENTS` | |
+| ✅ | `SHOW TAG KEYS` | |
+| ✅ | `SHOW TAG VALUES WITH KEY = ...` | |
+| ✅ | `SHOW FIELD KEYS` | |
+| ✅ | `SHOW DATABASES` | |
+| ✅ | `SHOW SERIES` | |
+| ✅ | `CREATE DATABASE` | Creates a PostgreSQL schema |
+| ✅ | `DROP DATABASE` | Drops the PostgreSQL schema |
+| ✅ | `DROP SERIES FROM ... WHERE ...` | Translates to `DELETE FROM` |
+| ✅ | `DROP MEASUREMENT` | Drops the hypertable |
+| ❌ | Subqueries | Not yet supported |
+| ❌ | `FILL()` | No equivalent translation yet |
+| ❌ | `INTO` (write query results) | Not yet supported |
 
 ## Type Inference
 
@@ -405,50 +457,75 @@ Field types are inferred from InfluxDB line protocol:
 
 ## Feature Compatibility
 
+
+# Timeflux Facade Test Results
+
 | Status | Test | Description | Duration |
 |--------|------|-------------|----------|
-| ✅ | BasicWrite | Write single point with one field | 4.934664ms |
-| ✅ | MultiFieldWrite | Write point with multiple fields of different types | 3.484967ms |
-| ✅ | TaggedWrite | Write points with tags | 2.047056ms |
-| ✅ | BatchWrite | Write batch of 100 points | 5.449964ms |
-| ✅ | AllDataTypes | Write point with all supported data types | 25.702077ms |
-| ✅ | SimpleSelect | SELECT * FROM measurement | 2.802349ms |
-| ✅ | SelectWithWhere | SELECT with WHERE clause filtering tags | 3.248763ms |
-| ✅ | SelectMean | SELECT MEAN() aggregation | 4.391141ms |
-| ✅ | GroupByTime | SELECT with GROUP BY time(5m) | 5.843596ms |
-| ✅ | GroupByTag | SELECT with GROUP BY tag | 7.288836ms |
-| ✅ | Count | SELECT COUNT(*) | 2.856268ms |
-| ✅ | Sum | SELECT SUM() | 3.338893ms |
-| ✅ | MinMax | SELECT MIN() and MAX() | 3.986252ms |
-| ✅ | ShowMeasurements | SHOW MEASUREMENTS | 1.693209ms |
-| ✅ | ShowTagKeys | SHOW TAG KEYS | 1.23289ms |
-| ✅ | ShowFieldKeys | SHOW FIELD KEYS | 1.18789ms |
-| ✅ | CreateDatabase | CREATE DATABASE | 753.651µs |
-| ✅ | ShowDatabases | SHOW DATABASES | 2.302676ms |
-| ✅ | ShowSeries | SHOW SERIES | 2.187918ms |
-| ✅ | DropSeries | DROP SERIES with WHERE clause | 107.174396ms |
-| ✅ | DropMeasurement | DROP MEASUREMENT | 104.11461ms |
-| ✅ | FirstLast | SELECT FIRST() and LAST() functions | 1.853137ms |
-| ❌ | Percentile | SELECT PERCENTILE() function<br>**Error:** Failed to execute query | 3.868787ms |
-| ✅ | MultipleAggregations | SELECT multiple aggregations in one query | 3.625738ms |
-| ✅ | ArithmeticOperations | SELECT with arithmetic operations (+, -, *, /) | 2.208645ms |
-| ❌ | ComplexWhere | SELECT with complex WHERE (AND, OR, comparison operators)<br>**Error:** Failed to execute query | 668.31µs |
-| ✅ | ShowTagValues | SHOW TAG VALUES with KEY | 1.587239ms |
-| ✅ | Limit | SELECT with LIMIT clause | 965.766µs |
-| ✅ | Offset | SELECT with OFFSET clause | 909.416µs |
-| ✅ | OrderBy | SELECT with ORDER BY clause | 1.045277ms |
-| ✅ | TimeRange | SELECT with time range in WHERE | 2.606991ms |
-| ✅ | GroupByTimeIntervals | Test different GROUP BY time() intervals (1m, 5m, 1h) | 2.212382ms |
-| ✅ | GroupByMultipleTags | SELECT with GROUP BY multiple tags | 207.063922ms |
-| ✅ | NowFunction | Use NOW() function in WHERE clause | 1.146985ms |
-| ✅ | BooleanFields | Query boolean fields with WHERE | 1.504378ms |
-| ✅ | StringFields | Query string fields with WHERE | 1.547606ms |
-| ✅ | NegativeNumbers | Query with negative numbers and zero | 203.726255ms |
-| ✅ | DropSeries | DROP SERIES with WHERE clause | 109.933283ms |
-| ✅ | DropMeasurement | DROP MEASUREMENT | 103.416551ms |
-| ✅ | DropDatabase | DROP DATABASE | 104.336478ms |
+| ✅ | BasicWrite | Write single point with one field | 6.801163ms |
+| ✅ | MultiFieldWrite | Write point with multiple fields of different types | 5.709709ms |
+| ✅ | TaggedWrite | Write points with tags | 5.225282ms |
+| ✅ | BatchWrite | Write batch of 100 points | 5.968928ms |
+| ✅ | AllDataTypes | Write point with all supported data types | 2.576475ms |
+| ✅ | SimpleSelect | SELECT * FROM measurement | 2.728004ms |
+| ✅ | SelectWithWhere | SELECT with WHERE clause filtering tags | 2.804248ms |
+| ✅ | SelectMean | SELECT MEAN() aggregation | 4.23132ms |
+| ✅ | GroupByTime | SELECT with GROUP BY time(5m) | 7.667817ms |
+| ✅ | GroupByTag | SELECT with GROUP BY tag | 6.060589ms |
+| ✅ | Count | SELECT COUNT(*) | 2.649679ms |
+| ✅ | Sum | SELECT SUM() | 3.559284ms |
+| ✅ | MinMax | SELECT MIN() and MAX() | 4.839366ms |
+| ✅ | ShowMeasurements | SHOW MEASUREMENTS | 1.762354ms |
+| ✅ | ShowTagKeys | SHOW TAG KEYS | 1.027113ms |
+| ✅ | ShowFieldKeys | SHOW FIELD KEYS | 1.048455ms |
+| ✅ | CreateDatabase | CREATE DATABASE | 660.542µs |
+| ✅ | ShowDatabases | SHOW DATABASES | 2.262632ms |
+| ✅ | ShowSeries | SHOW SERIES | 1.269345ms |
+| ✅ | DropSeries | DROP SERIES with WHERE clause | 112.11249ms |
+| ✅ | DropMeasurement | DROP MEASUREMENT | 104.275748ms |
+| ✅ | FirstLast | SELECT FIRST() and LAST() functions | 2.221247ms |
+| ✅ | Percentile | SELECT PERCENTILE() function | 4.179828ms |
+| ✅ | MultipleAggregations | SELECT multiple aggregations in one query | 4.536375ms |
+| ✅ | ArithmeticOperations | SELECT with arithmetic operations (+, -, *, /) | 2.36909ms |
+| ✅ | ComplexWhere | SELECT with complex WHERE (AND, OR, comparison operators) | 18.835663ms |
+| ✅ | ShowTagValues | SHOW TAG VALUES with KEY | 1.515577ms |
+| ✅ | Limit | SELECT with LIMIT clause | 1.038193ms |
+| ✅ | Offset | SELECT with OFFSET clause | 1.010519ms |
+| ✅ | OrderBy | SELECT with ORDER BY clause | 1.647866ms |
+| ✅ | TimeRange | SELECT with time range in WHERE | 11.813937ms |
+| ✅ | GroupByTimeIntervals | Test different GROUP BY time() intervals (1m, 5m, 1h) | 4.580791ms |
+| ✅ | GroupByMultipleTags | SELECT with GROUP BY multiple tags | 207.422398ms |
+| ✅ | NowFunction | Use NOW() function in WHERE clause | 1.275609ms |
+| ✅ | BooleanFields | Query boolean fields with WHERE | 3.110882ms |
+| ✅ | StringFields | Query string fields with WHERE | 1.675472ms |
+| ✅ | NegativeNumbers | Query with negative numbers and zero | 205.440891ms |
+| ✅ | DropSeries | DROP SERIES with WHERE clause | 106.281272ms |
+| ✅ | DropMeasurement | DROP MEASUREMENT | 103.553971ms |
+| ✅ | DropDatabase | DROP DATABASE | 107.279086ms |
+| ✅ | WriteNumericData | Write known numeric dataset for Phase 1 function tests | 3.750134ms |
+| ✅ | Stddev | SELECT STDDEV() aggregation | 1.663358ms |
+| ✅ | Median | SELECT MEDIAN() aggregation | 1.048993ms |
+| ✅ | Spread | SELECT SPREAD() (MAX-MIN) aggregation | 1.606488ms |
+| ✅ | Abs | SELECT ABS() on negative values | 1.15031ms |
+| ✅ | Ceil | SELECT CEIL() ceiling function | 1.343904ms |
+| ✅ | Floor | SELECT FLOOR() floor function | 1.42966ms |
+| ✅ | Round | SELECT ROUND() rounding function | 2.390172ms |
+| ✅ | Sqrt | SELECT SQRT() square root function | 3.822994ms |
+| ✅ | Pow | SELECT POW(field, exponent) power function | 2.146658ms |
+| ✅ | Exp | SELECT EXP() exponential function | 1.17573ms |
+| ✅ | Ln | SELECT LN() natural logarithm | 1.061525ms |
+| ✅ | Log2 | SELECT LOG2() base-2 logarithm | 1.360194ms |
+| ✅ | Log10 | SELECT LOG10() base-10 logarithm | 1.08444ms |
+| ✅ | LogBase | SELECT LOG(field, base) custom base logarithm | 1.051762ms |
+| ✅ | Sin | SELECT SIN() sine function (radians) | 1.112369ms |
+| ✅ | Cos | SELECT COS() cosine function (radians) | 1.198539ms |
+| ✅ | Tan | SELECT TAN() tangent function (radians) | 1.451375ms |
+| ✅ | Asin | SELECT ASIN() arcsine (input in [-1,1]) | 1.493281ms |
+| ✅ | Acos | SELECT ACOS() arccosine (input in [-1,1]) | 1.561699ms |
+| ✅ | Atan | SELECT ATAN() arctangent | 1.289703ms |
+| ✅ | Atan2 | SELECT ATAN2(y, x) two-argument arctangent | 1.499374ms |
 
-**Summary:** 38/40 passed in 1.551928168s
+**Summary:** 62/62 passed in 2.1136693s
 
 ## Project Structure
 

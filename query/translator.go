@@ -265,6 +265,14 @@ func (t *Translator) translateExpr(expr influxql.Expr) string {
 		// For now, just return DISTINCT keyword
 		return "DISTINCT"
 
+	case *influxql.ParenExpr:
+		// Parenthesized expression — wrap translated inner expr in parens
+		return "(" + t.translateExpr(e.Expr) + ")"
+
+	case *influxql.RegexLiteral:
+		// PostgreSQL uses ~ for regex match; InfluxQL uses =~
+		return "'" + strings.ReplaceAll(e.Val.String(), "'", "''") + "'"
+
 	default:
 		return fmt.Sprintf("UNSUPPORTED(%T)", expr)
 	}
@@ -318,27 +326,195 @@ func (t *Translator) translateCall(call *influxql.Call) string {
 		if len(call.Args) >= 2 {
 			// Args: [field, percentile_value]
 			// PostgreSQL percentile_cont expects a fraction (0.0-1.0)
-			// InfluxDB percentile can be either 0-100 or 0.0-1.0
-			percentileExpr := t.translateExpr(call.Args[1])
+			// InfluxDB percentile uses 0-100 scale
 
-			// Check if it's a number literal > 1 (likely 0-100 scale)
+			// Check if it's a float number literal > 1 (0-100 scale)
 			if numLit, ok := call.Args[1].(*influxql.NumberLiteral); ok {
 				if numLit.Val > 1.0 {
-					// Convert from 0-100 to 0.0-1.0
 					return fmt.Sprintf("percentile_cont(%g) WITHIN GROUP (ORDER BY %s)",
 						numLit.Val/100.0,
 						t.translateExpr(call.Args[0]))
 				}
+				// Already a fraction (0.0-1.0), use as-is
+				return fmt.Sprintf("percentile_cont(%g) WITHIN GROUP (ORDER BY %s)",
+					numLit.Val,
+					t.translateExpr(call.Args[0]))
 			}
 
-			// Already a fraction, use as-is
+			// Check if it's an integer literal (InfluxQL typically passes integers like 95, 99, 50)
+			if intLit, ok := call.Args[1].(*influxql.IntegerLiteral); ok {
+				frac := float64(intLit.Val) / 100.0
+				return fmt.Sprintf("percentile_cont(%g) WITHIN GROUP (ORDER BY %s)",
+					frac,
+					t.translateExpr(call.Args[0]))
+			}
+
+			// Fallback: pass through as-is
 			return fmt.Sprintf("percentile_cont(%s) WITHIN GROUP (ORDER BY %s)",
-				percentileExpr,
+				t.translateExpr(call.Args[1]),
 				t.translateExpr(call.Args[0]))
 		}
 
 	case "now":
 		return "NOW()"
+
+	// --- Phase 1: Aggregation functions ---
+
+	case "stddev":
+		if len(call.Args) > 0 {
+			return "STDDEV(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "STDDEV(*)"
+
+	case "median":
+		if len(call.Args) > 0 {
+			return fmt.Sprintf("percentile_cont(0.5) WITHIN GROUP (ORDER BY %s)", t.translateExpr(call.Args[0]))
+		}
+		return "percentile_cont(0.5) WITHIN GROUP (ORDER BY *)"
+
+	case "spread":
+		// SPREAD = MAX - MIN
+		if len(call.Args) > 0 {
+			field := t.translateExpr(call.Args[0])
+			return fmt.Sprintf("(MAX(%s) - MIN(%s))", field, field)
+		}
+		return "(MAX(*) - MIN(*))"
+
+	case "mode":
+		if len(call.Args) > 0 {
+			return fmt.Sprintf("MODE() WITHIN GROUP (ORDER BY %s)", t.translateExpr(call.Args[0]))
+		}
+		return "MODE() WITHIN GROUP (ORDER BY *)"
+
+	// --- Phase 1: Math / transformation functions ---
+
+	case "abs":
+		if len(call.Args) > 0 {
+			return "ABS(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "ABS(*)"
+
+	case "ceil":
+		if len(call.Args) > 0 {
+			return "CEIL(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "CEIL(*)"
+
+	case "floor":
+		if len(call.Args) > 0 {
+			return "FLOOR(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "FLOOR(*)"
+
+	case "round":
+		if len(call.Args) > 0 {
+			return "ROUND(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "ROUND(*)"
+
+	case "sqrt":
+		if len(call.Args) > 0 {
+			return "SQRT(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "SQRT(*)"
+
+	case "pow":
+		// InfluxQL: POW(field, exponent) → PostgreSQL: POWER(field, exponent)
+		if len(call.Args) >= 2 {
+			return fmt.Sprintf("POWER(%s, %s)", t.translateExpr(call.Args[0]), t.translateExpr(call.Args[1]))
+		}
+		if len(call.Args) == 1 {
+			return "POWER(" + t.translateExpr(call.Args[0]) + ", 2)"
+		}
+		return "POWER(*, 2)"
+
+	case "exp":
+		if len(call.Args) > 0 {
+			return "EXP(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "EXP(*)"
+
+	case "ln":
+		// Natural log
+		if len(call.Args) > 0 {
+			return "LN(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "LN(*)"
+
+	case "log":
+		// InfluxQL: LOG(field, base) → PostgreSQL: LOG(base, field) — note arg order swap!
+		// PostgreSQL LOG(numeric, numeric) requires BOTH args to be numeric.
+		// DOUBLE PRECISION columns must be cast with ::numeric.
+		if len(call.Args) >= 2 {
+			base := t.translateExpr(call.Args[1])
+			// Cast integer or float literals to numeric
+			switch call.Args[1].(type) {
+			case *influxql.IntegerLiteral, *influxql.NumberLiteral:
+				base = base + "::numeric"
+			}
+			field := t.translateExpr(call.Args[0])
+			return fmt.Sprintf("LOG(%s, %s::numeric)", base, field)
+		}
+		if len(call.Args) == 1 {
+			return "LOG(10::numeric, " + t.translateExpr(call.Args[0]) + "::numeric)"
+		}
+		return "LOG(10::numeric, *)"
+
+	case "log2":
+		// PostgreSQL LOG(numeric, numeric) — both args must be numeric
+		if len(call.Args) > 0 {
+			return "LOG(2::numeric, " + t.translateExpr(call.Args[0]) + "::numeric)"
+		}
+		return "LOG(2::numeric, *)"
+
+	case "log10":
+		if len(call.Args) > 0 {
+			return "LOG(10::numeric, " + t.translateExpr(call.Args[0]) + "::numeric)"
+		}
+		return "LOG(10::numeric, *)"
+
+	case "sin":
+		if len(call.Args) > 0 {
+			return "SIN(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "SIN(*)"
+
+	case "cos":
+		if len(call.Args) > 0 {
+			return "COS(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "COS(*)"
+
+	case "tan":
+		if len(call.Args) > 0 {
+			return "TAN(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "TAN(*)"
+
+	case "asin":
+		if len(call.Args) > 0 {
+			return "ASIN(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "ASIN(*)"
+
+	case "acos":
+		if len(call.Args) > 0 {
+			return "ACOS(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "ACOS(*)"
+
+	case "atan":
+		if len(call.Args) > 0 {
+			return "ATAN(" + t.translateExpr(call.Args[0]) + ")"
+		}
+		return "ATAN(*)"
+
+	case "atan2":
+		// InfluxQL: ATAN2(y, x) → PostgreSQL: ATAN2(y, x) — same arg order
+		if len(call.Args) >= 2 {
+			return fmt.Sprintf("ATAN2(%s, %s)", t.translateExpr(call.Args[0]), t.translateExpr(call.Args[1]))
+		}
+		return "ATAN2(*, *)"
 
 	default:
 		// Generic function call

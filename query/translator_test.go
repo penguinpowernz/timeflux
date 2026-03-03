@@ -582,6 +582,300 @@ func TestTranslatorDatabaseContext(t *testing.T) {
 	})
 }
 
+// TestTranslatorPhase1AggregationFunctions tests Phase 1 aggregation functions
+func TestTranslatorPhase1AggregationFunctions(t *testing.T) {
+	Convey("Given a translator for testdb", t, func() {
+		translator := NewTranslator("testdb")
+
+		Convey("STDDEV() translates to STDDEV()", func() {
+			sql, err := translator.Translate("SELECT stddev(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `STDDEV("value")`)
+		})
+
+		Convey("MEDIAN() translates to percentile_cont(0.5)", func() {
+			sql, err := translator.Translate("SELECT median(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "percentile_cont(0.5)")
+			So(sql, ShouldContainSubstring, "WITHIN GROUP")
+			So(sql, ShouldContainSubstring, `ORDER BY "value"`)
+		})
+
+		Convey("SPREAD() translates to MAX - MIN", func() {
+			sql, err := translator.Translate("SELECT spread(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `MAX("value")`)
+			So(sql, ShouldContainSubstring, `MIN("value")`)
+			So(sql, ShouldContainSubstring, " - ")
+		})
+
+		Convey("MODE() translates to MODE() WITHIN GROUP", func() {
+			sql, err := translator.Translate("SELECT mode(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "MODE()")
+			So(sql, ShouldContainSubstring, "WITHIN GROUP")
+			So(sql, ShouldContainSubstring, `ORDER BY "value"`)
+		})
+
+		Convey("Multiple phase 1 aggregations in one query", func() {
+			sql, err := translator.Translate("SELECT stddev(value), median(value), spread(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "STDDEV")
+			So(sql, ShouldContainSubstring, "percentile_cont")
+			So(sql, ShouldContainSubstring, "MAX")
+			So(sql, ShouldContainSubstring, "MIN")
+		})
+
+		Convey("STDDEV() with GROUP BY time", func() {
+			sql, err := translator.Translate("SELECT stddev(value) FROM cpu GROUP BY time(5m)")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "STDDEV")
+			So(sql, ShouldContainSubstring, "time_bucket")
+		})
+	})
+}
+
+// TestTranslatorPhase1MathFunctions tests Phase 1 math/transformation functions
+func TestTranslatorPhase1MathFunctions(t *testing.T) {
+	Convey("Given a translator for testdb", t, func() {
+		translator := NewTranslator("testdb")
+
+		Convey("ABS() translates to ABS()", func() {
+			sql, err := translator.Translate("SELECT abs(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `ABS("value")`)
+		})
+
+		Convey("CEIL() translates to CEIL()", func() {
+			sql, err := translator.Translate("SELECT ceil(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `CEIL("value")`)
+		})
+
+		Convey("FLOOR() translates to FLOOR()", func() {
+			sql, err := translator.Translate("SELECT floor(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `FLOOR("value")`)
+		})
+
+		Convey("ROUND() translates to ROUND()", func() {
+			sql, err := translator.Translate("SELECT round(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `ROUND("value")`)
+		})
+
+		Convey("SQRT() translates to SQRT()", func() {
+			sql, err := translator.Translate("SELECT sqrt(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `SQRT("value")`)
+		})
+
+		Convey("POW(field, exp) translates to POWER(field, exp)", func() {
+			sql, err := translator.Translate("SELECT pow(value, 2) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "POWER")
+			So(sql, ShouldContainSubstring, `"value"`)
+			So(sql, ShouldContainSubstring, "2")
+		})
+
+		Convey("EXP() translates to EXP()", func() {
+			sql, err := translator.Translate("SELECT exp(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `EXP("value")`)
+		})
+
+		Convey("LN() translates to LN()", func() {
+			sql, err := translator.Translate("SELECT ln(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `LN("value")`)
+		})
+
+		Convey("LOG(field, base) swaps arg order to LOG(base, field)", func() {
+			sql, err := translator.Translate("SELECT log(value, 8) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "LOG(")
+			// base should come first in postgres, cast to numeric for type compatibility
+			So(sql, ShouldContainSubstring, "LOG(8::numeric,")
+		})
+
+		Convey("LOG2() translates to LOG(2::numeric, field::numeric)", func() {
+			sql, err := translator.Translate("SELECT log2(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "LOG(2::numeric,")
+			So(sql, ShouldContainSubstring, `"value"`)
+		})
+
+		Convey("LOG10() translates to LOG(10::numeric, field::numeric)", func() {
+			sql, err := translator.Translate("SELECT log10(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "LOG(10::numeric,")
+			So(sql, ShouldContainSubstring, `"value"`)
+		})
+	})
+}
+
+// TestTranslatorPhase1TrigFunctions tests Phase 1 trigonometry functions
+func TestTranslatorPhase1TrigFunctions(t *testing.T) {
+	Convey("Given a translator for testdb", t, func() {
+		translator := NewTranslator("testdb")
+
+		Convey("SIN() translates to SIN()", func() {
+			sql, err := translator.Translate("SELECT sin(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `SIN("value")`)
+		})
+
+		Convey("COS() translates to COS()", func() {
+			sql, err := translator.Translate("SELECT cos(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `COS("value")`)
+		})
+
+		Convey("TAN() translates to TAN()", func() {
+			sql, err := translator.Translate("SELECT tan(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `TAN("value")`)
+		})
+
+		Convey("ASIN() translates to ASIN()", func() {
+			sql, err := translator.Translate("SELECT asin(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `ASIN("value")`)
+		})
+
+		Convey("ACOS() translates to ACOS()", func() {
+			sql, err := translator.Translate("SELECT acos(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `ACOS("value")`)
+		})
+
+		Convey("ATAN() translates to ATAN()", func() {
+			sql, err := translator.Translate("SELECT atan(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, `ATAN("value")`)
+		})
+
+		Convey("ATAN2(y, x) translates to ATAN2(y, x) preserving arg order", func() {
+			sql, err := translator.Translate("SELECT atan2(y_val, x_val) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "ATAN2(")
+			So(sql, ShouldContainSubstring, `"y_val"`)
+			So(sql, ShouldContainSubstring, `"x_val"`)
+		})
+
+		Convey("All trig functions can be combined in a single query", func() {
+			sql, err := translator.Translate("SELECT sin(value), cos(value), tan(value) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "SIN")
+			So(sql, ShouldContainSubstring, "COS")
+			So(sql, ShouldContainSubstring, "TAN")
+		})
+	})
+}
+
+// TestTranslatorPhase1FunctionsInContext tests Phase 1 functions in realistic query contexts
+func TestTranslatorPhase1FunctionsInContext(t *testing.T) {
+	Convey("Given a translator for testdb", t, func() {
+		translator := NewTranslator("testdb")
+
+		Convey("Math function with WHERE clause", func() {
+			sql, err := translator.Translate("SELECT abs(value) FROM cpu WHERE value < 0")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "ABS")
+			So(sql, ShouldContainSubstring, "WHERE")
+			So(sql, ShouldContainSubstring, "< 0")
+		})
+
+		Convey("Math function with GROUP BY time", func() {
+			sql, err := translator.Translate("SELECT abs(mean(value)) FROM cpu GROUP BY time(5m)")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "ABS")
+			So(sql, ShouldContainSubstring, "AVG")
+			So(sql, ShouldContainSubstring, "time_bucket")
+		})
+
+		Convey("STDDEV with GROUP BY tag and time", func() {
+			sql, err := translator.Translate("SELECT stddev(value) FROM cpu GROUP BY time(10m), host")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "STDDEV")
+			So(sql, ShouldContainSubstring, "time_bucket")
+			So(sql, ShouldContainSubstring, `"host"`)
+		})
+
+		Convey("SPREAD used with WHERE and LIMIT", func() {
+			sql, err := translator.Translate("SELECT spread(value) FROM cpu WHERE host='server1' LIMIT 10")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "MAX")
+			So(sql, ShouldContainSubstring, "MIN")
+			So(sql, ShouldContainSubstring, "WHERE")
+			So(sql, ShouldContainSubstring, "LIMIT 10")
+		})
+
+		Convey("MEDIAN with ORDER BY and LIMIT", func() {
+			sql, err := translator.Translate("SELECT median(value) FROM cpu ORDER BY time DESC LIMIT 5")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "percentile_cont")
+			So(sql, ShouldContainSubstring, "ORDER BY")
+			So(sql, ShouldContainSubstring, "LIMIT 5")
+		})
+
+		Convey("POW with exponent as float", func() {
+			sql, err := translator.Translate("SELECT pow(value, 0.5) FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "POWER")
+			So(sql, ShouldContainSubstring, "0.5")
+		})
+
+		Convey("LOG with custom base", func() {
+			sql, err := translator.Translate("SELECT log(value, 2) FROM cpu")
+
+			So(err, ShouldBeNil)
+			// PostgreSQL LOG(base, value) - args are swapped from InfluxQL LOG(value, base)
+			// Base must be cast to numeric for type compatibility
+			So(sql, ShouldContainSubstring, "LOG(2::numeric,")
+		})
+
+		Convey("Math function aliases work correctly", func() {
+			sql, err := translator.Translate("SELECT sqrt(value) AS root_val FROM cpu")
+
+			So(err, ShouldBeNil)
+			So(sql, ShouldContainSubstring, "SQRT")
+			So(sql, ShouldContainSubstring, `AS "root_val"`)
+		})
+	})
+}
+
 // Benchmark tests for query translation performance
 func BenchmarkTranslateSimpleSelect(b *testing.B) {
 	translator := NewTranslator("testdb")

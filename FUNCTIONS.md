@@ -4,46 +4,78 @@ This document provides a comprehensive mapping of InfluxQL functions to their Po
 
 ## Currently Supported Functions
 
-The following functions are already implemented in `query/translator.go`:
+The following functions are implemented in `query/translator.go`.
 
-- **MEAN()** → `AVG()` (line 275-279)
-- **COUNT()** → `COUNT()` (line 281-285)
-- **SUM()** → `SUM()` (line 287-291)
-- **MAX()** → `MAX()` (line 293-297)
-- **MIN()** → `MIN()` (line 299-303)
-- **FIRST()** → `FIRST(value, time)` (line 305-309, TimescaleDB function)
-- **LAST()** → `LAST(value, time)` (line 311-315, TimescaleDB function)
-- **PERCENTILE()** → `percentile_cont() WITHIN GROUP (ORDER BY ...)` (line 317-338)
-- **NOW()** → `NOW()` (line 340-341)
+### Original (pre-Phase 1)
+
+- **MEAN()** → `AVG()`
+- **COUNT()** → `COUNT()`
+- **SUM()** → `SUM()`
+- **MAX()** → `MAX()`
+- **MIN()** → `MIN()`
+- **FIRST()** → `FIRST(value, time)` (TimescaleDB function)
+- **LAST()** → `LAST(value, time)` (TimescaleDB function)
+- **PERCENTILE()** → `percentile_cont() WITHIN GROUP (ORDER BY ...)`
+- **NOW()** → `NOW()`
+
+### Phase 1 (implemented)
+
+**Aggregations:**
+- **STDDEV()** → `STDDEV()`
+- **MEDIAN()** → `percentile_cont(0.5) WITHIN GROUP (ORDER BY field)`
+- **SPREAD()** → `(MAX(field) - MIN(field))`
+- **MODE()** → `MODE() WITHIN GROUP (ORDER BY field)`
+
+**Math:**
+- **ABS()** → `ABS()`
+- **CEIL()** → `CEIL()`
+- **FLOOR()** → `FLOOR()`
+- **ROUND()** → `ROUND()`
+- **SQRT()** → `SQRT()`
+- **POW(field, exp)** → `POWER(field, exp)`
+- **EXP()** → `EXP()`
+- **LN()** → `LN()`
+- **LOG(field, base)** → `LOG(base::numeric, field::numeric)` ⚠️ arg order is swapped AND both args must be cast to `numeric`
+- **LOG2()** → `LOG(2, field)`
+- **LOG10()** → `LOG(10, field)`
+
+**Trigonometry:**
+- **SIN()** → `SIN()`
+- **COS()** → `COS()`
+- **TAN()** → `TAN()`
+- **ASIN()** → `ASIN()`
+- **ACOS()** → `ACOS()`
+- **ATAN()** → `ATAN()`
+- **ATAN2(y, x)** → `ATAN2(y, x)` (same arg order)
 
 ## Function Mapping by Implementation Difficulty
 
-### Phase 1: Direct Mapping (Easiest - 1-5 lines of code)
+### Phase 1: Direct Mapping ✅ COMPLETE
 
-These functions have direct PostgreSQL equivalents and require minimal translation logic.
+These functions have direct PostgreSQL equivalents. All implemented.
 
 | InfluxQL Function | PostgreSQL Analog | Notes | Status |
 |-------------------|-------------------|-------|--------|
-| **STDDEV(field)** | `STDDEV(field)` | Standard deviation | ✅ **EASY** |
-| **MEDIAN(field)** | `percentile_cont(0.5) WITHIN GROUP (ORDER BY field)` | 50th percentile | ✅ **EASY** |
-| **ABS(field)** | `ABS(field)` | Absolute value | ✅ **EASY** |
-| **CEIL(field)** | `CEIL(field)` | Ceiling | ✅ **EASY** |
-| **FLOOR(field)** | `FLOOR(field)` | Floor | ✅ **EASY** |
-| **ROUND(field)** | `ROUND(field)` | Round to nearest integer | ✅ **EASY** |
-| **SQRT(field)** | `SQRT(field)` | Square root | ✅ **EASY** |
-| **POW(field, exponent)** | `POWER(field, exponent)` | Power/exponentiation | ✅ **EASY** |
-| **EXP(field)** | `EXP(field)` | Exponential (e^x) | ✅ **EASY** |
-| **LN(field)** | `LN(field)` | Natural logarithm | ✅ **EASY** |
-| **LOG(field, base)** | `LOG(base, field)` | Logarithm with base (note arg order swap) | ✅ **EASY** |
-| **LOG2(field)** | `LOG(2, field)` | Base-2 logarithm | ✅ **EASY** |
-| **LOG10(field)** | `LOG(10, field)` | Base-10 logarithm | ✅ **EASY** |
-| **SIN(field)** | `SIN(field)` | Sine | ✅ **EASY** |
-| **COS(field)** | `COS(field)` | Cosine | ✅ **EASY** |
-| **TAN(field)** | `TAN(field)` | Tangent | ✅ **EASY** |
-| **ASIN(field)** | `ASIN(field)` | Arcsine | ✅ **EASY** |
-| **ACOS(field)** | `ACOS(field)` | Arccosine | ✅ **EASY** |
-| **ATAN(field)** | `ATAN(field)` | Arctangent | ✅ **EASY** |
-| **ATAN2(y, x)** | `ATAN2(y, x)` | Two-argument arctangent | ✅ **EASY** |
+| **STDDEV(field)** | `STDDEV(field)` | Standard deviation | ✅ **DONE** |
+| **MEDIAN(field)** | `percentile_cont(0.5) WITHIN GROUP (ORDER BY field)` | 50th percentile | ✅ **DONE** |
+| **ABS(field)** | `ABS(field)` | Absolute value | ✅ **DONE** |
+| **CEIL(field)** | `CEIL(field)` | Ceiling | ✅ **DONE** |
+| **FLOOR(field)** | `FLOOR(field)` | Floor | ✅ **DONE** |
+| **ROUND(field)** | `ROUND(field)` | Round to nearest integer | ✅ **DONE** |
+| **SQRT(field)** | `SQRT(field)` | Square root | ✅ **DONE** |
+| **POW(field, exponent)** | `POWER(field, exponent)` | Power/exponentiation | ✅ **DONE** |
+| **EXP(field)** | `EXP(field)` | Exponential (e^x) | ✅ **DONE** |
+| **LN(field)** | `LN(field)` | Natural logarithm | ✅ **DONE** |
+| **LOG(field, base)** | `LOG(base, field)` | Logarithm with base (**note arg order swap from InfluxQL**) | ✅ **DONE** |
+| **LOG2(field)** | `LOG(2, field)` | Base-2 logarithm | ✅ **DONE** |
+| **LOG10(field)** | `LOG(10, field)` | Base-10 logarithm | ✅ **DONE** |
+| **SIN(field)** | `SIN(field)` | Sine (radians) | ✅ **DONE** |
+| **COS(field)** | `COS(field)` | Cosine (radians) | ✅ **DONE** |
+| **TAN(field)** | `TAN(field)` | Tangent (radians) | ✅ **DONE** |
+| **ASIN(field)** | `ASIN(field)` | Arcsine; input must be in [-1, 1] | ✅ **DONE** |
+| **ACOS(field)** | `ACOS(field)` | Arccosine; input must be in [-1, 1] | ✅ **DONE** |
+| **ATAN(field)** | `ATAN(field)` | Arctangent | ✅ **DONE** |
+| **ATAN2(y, x)** | `ATAN2(y, x)` | Two-argument arctangent (same arg order) | ✅ **DONE** |
 
 ### Phase 2: Simple Aggregations (Easy - 5-15 lines of code)
 
@@ -51,9 +83,9 @@ These require basic window functions or aggregation logic.
 
 | InfluxQL Function | PostgreSQL Analog | Notes | Status |
 |-------------------|-------------------|-------|--------|
-| **SPREAD(field)** | `MAX(field) - MIN(field)` | Range of values | ✅ **EASY** |
-| **DISTINCT(field)** | `COUNT(DISTINCT field)` | Count distinct values | ✅ **EASY** |
-| **MODE(field)** | `MODE() WITHIN GROUP (ORDER BY field)` | Most frequent value | ✅ **EASY** |
+| **SPREAD(field)** | `MAX(field) - MIN(field)` | Range of values | ✅ **DONE** (Phase 1) |
+| **MODE(field)** | `MODE() WITHIN GROUP (ORDER BY field)` | Most frequent value | ✅ **DONE** (Phase 1) |
+| **DISTINCT(field)** | `COUNT(DISTINCT field)` | Count distinct values; InfluxQL allows `SELECT DISTINCT field` syntax | 🟨 **NEXT** |
 | **TOP(field, N)** | `(SELECT field FROM tbl ORDER BY field DESC LIMIT N)` | Top N values (needs subquery) | 🟨 **MEDIUM** |
 | **BOTTOM(field, N)** | `(SELECT field FROM tbl ORDER BY field ASC LIMIT N)` | Bottom N values (needs subquery) | 🟨 **MEDIUM** |
 | **SAMPLE(field, N)** | `(SELECT field FROM tbl ORDER BY RANDOM() LIMIT N)` | Random N samples | 🟨 **MEDIUM** |
@@ -447,30 +479,36 @@ SELECT CHANDE_MOMENTUM_OSCILLATOR(value, 20) FROM cpu
 
 ## Summary Statistics
 
-| Category | Total Functions | Implemented | Phase 1-2 | Phase 3-4 | Phase 5-6 |
+| Category | Total Functions | Implemented | Remaining Phase 2 | Phase 3-4 | Phase 5-6 |
 |----------|----------------|-------------|-----------|-----------|-----------|
-| **Aggregations** | 9 | 6 | 3 | 0 | 0 |
+| **Aggregations** | 9 | 8 | 1 | 0 | 0 |
 | **Selectors** | 7 | 3 | 3 | 1 | 0 |
-| **Transformations** | 25 | 1 | 19 | 3 | 2 |
+| **Transformations** | 25 | 21 | 0 | 2 | 2 |
 | **Predictors** | 1 | 0 | 0 | 0 | 1 |
 | **Technical Analysis** | 8 | 0 | 0 | 0 | 8 |
-| **TOTAL** | **50** | **10** | **25** | **4** | **11** |
+| **TOTAL** | **50** | **32** | **4** | **3** | **11** |
 
-**Coverage:** 20% implemented, 50% easy to add (Phases 1-2), 30% complex/hard
+**Coverage:** 64% implemented (up from 20% before Phase 1)
 
 ---
 
 ## Quick Reference: Currently Supported
 
 ```sql
--- Aggregations (6/9)
-COUNT(*), SUM(field), AVG(field), MIN(field), MAX(field), MEAN(field)
+-- Aggregations (8/9)
+COUNT(*), SUM(field), AVG(field)/MEAN(field), MIN(field), MAX(field),
+STDDEV(field), MEDIAN(field), SPREAD(field), MODE(field)
 
 -- Selectors (3/7)
 FIRST(field), LAST(field), PERCENTILE(field, N)
 
--- Transformations (1/25)
+-- Math / Transformations (22/25)
 NOW()
+ABS(field), CEIL(field), FLOOR(field), ROUND(field), SQRT(field)
+POW(field, exp), EXP(field), LN(field)
+LOG(field, base), LOG2(field), LOG10(field)
+SIN(field), COS(field), TAN(field)
+ASIN(field), ACOS(field), ATAN(field), ATAN2(y, x)
 
 -- Technical Analysis (0/8)
 -- None yet

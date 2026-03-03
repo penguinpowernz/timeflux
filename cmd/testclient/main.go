@@ -186,6 +186,73 @@ func main() {
 	// Test 40: DROP DATABASE
 	suite.addTest(testDropDatabase(c))
 
+	// Phase 1 function tests - write numeric data first
+	suite.addTest(testWriteNumericData(c))
+	time.Sleep(500 * time.Millisecond)
+
+	// Test 41: STDDEV function
+	suite.addTest(testStddev(c))
+
+	// Test 42: MEDIAN function
+	suite.addTest(testMedian(c))
+
+	// Test 43: SPREAD function
+	suite.addTest(testSpread(c))
+
+	// Test 44: ABS function
+	suite.addTest(testAbs(c))
+
+	// Test 45: CEIL function
+	suite.addTest(testCeil(c))
+
+	// Test 46: FLOOR function
+	suite.addTest(testFloor(c))
+
+	// Test 47: ROUND function
+	suite.addTest(testRound(c))
+
+	// Test 48: SQRT function
+	suite.addTest(testSqrt(c))
+
+	// Test 49: POW function
+	suite.addTest(testPow(c))
+
+	// Test 50: EXP function
+	suite.addTest(testExp(c))
+
+	// Test 51: LN function
+	suite.addTest(testLn(c))
+
+	// Test 52: LOG2 function
+	suite.addTest(testLog2(c))
+
+	// Test 53: LOG10 function
+	suite.addTest(testLog10(c))
+
+	// Test 54: LOG with base
+	suite.addTest(testLogBase(c))
+
+	// Test 55: SIN function
+	suite.addTest(testSin(c))
+
+	// Test 56: COS function
+	suite.addTest(testCos(c))
+
+	// Test 57: TAN function
+	suite.addTest(testTan(c))
+
+	// Test 58: ASIN function
+	suite.addTest(testAsin(c))
+
+	// Test 59: ACOS function
+	suite.addTest(testAcos(c))
+
+	// Test 60: ATAN function
+	suite.addTest(testAtan(c))
+
+	// Test 61: ATAN2 function
+	suite.addTest(testAtan2(c))
+
 	// Calculate summary
 	suite.Summary.Total = len(suite.Results)
 	suite.Summary.Duration = time.Since(startTime).String()
@@ -1488,6 +1555,413 @@ func testNegativeNumbers(c client.Client) TestResult {
 			"rows": len(response.Results[0].Series[0].Values),
 		}
 	}
+	return result
+}
+
+// --- Phase 1 Function Tests ---
+
+// testWriteNumericData writes a known dataset for math function tests
+func testWriteNumericData(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{
+		Name:        "WriteNumericData",
+		Description: "Write known numeric dataset for Phase 1 function tests",
+	}
+
+	bp, _ := client.NewBatchPoints(client.BatchPointsConfig{
+		Database: database,
+	})
+
+	// Write values: 1, 4, 9, 16, 25 (perfect squares), and also -3.7, 3.7 (for abs/ceil/floor tests)
+	// and a value in [0,1] for asin/acos
+	baseTime := time.Now().Add(-10 * time.Minute)
+	testValues := []float64{1.0, 4.0, 9.0, 16.0, 25.0}
+	for i, v := range testValues {
+		fields := map[string]interface{}{
+			"value":    v,
+			"neg":      -v,
+			"fraction": v / 100.0, // 0.01, 0.04, ... 0.25 (in [-1,1] for asin/acos)
+		}
+		pt, _ := client.NewPoint("math_test", map[string]string{"run": "phase1"}, fields, baseTime.Add(time.Duration(i)*time.Minute))
+		bp.AddPoint(pt)
+	}
+
+	err := c.Write(bp)
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"points_written": len(testValues)}
+	return result
+}
+
+func queryOneValue(c client.Client, q string) (interface{}, error) {
+	query := client.NewQuery(q, database, "")
+	response, err := c.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	if response.Error() != nil {
+		return nil, response.Error()
+	}
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 &&
+		len(response.Results[0].Series[0].Values) > 0 &&
+		len(response.Results[0].Series[0].Values[0]) > 0 {
+		row := response.Results[0].Series[0].Values[0]
+		cols := response.Results[0].Series[0].Columns
+		// If first column is "time", return second; otherwise return first
+		if len(cols) > 0 && cols[0] == "time" && len(row) > 1 {
+			return row[1], nil
+		}
+		return row[0], nil
+	}
+	return nil, fmt.Errorf("no data returned")
+}
+
+func testStddev(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Stddev", Description: "SELECT STDDEV() aggregation"}
+
+	val, err := queryOneValue(c, "SELECT stddev(value) FROM math_test WHERE run='phase1'")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"stddev": val}
+	return result
+}
+
+func testMedian(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Median", Description: "SELECT MEDIAN() aggregation"}
+
+	val, err := queryOneValue(c, "SELECT median(value) FROM math_test WHERE run='phase1'")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"median": val}
+	return result
+}
+
+func testSpread(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Spread", Description: "SELECT SPREAD() (MAX-MIN) aggregation"}
+
+	val, err := queryOneValue(c, "SELECT spread(value) FROM math_test WHERE run='phase1'")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"spread": val}
+	return result
+}
+
+func testAbs(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Abs", Description: "SELECT ABS() on negative values"}
+
+	q := client.NewQuery("SELECT abs(neg) FROM math_test WHERE run='phase1' LIMIT 3", database, "")
+	response, err := c.Query(q)
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if response.Error() != nil {
+		result.Error = response.Error().Error()
+		return result
+	}
+
+	result.Success = true
+	if len(response.Results) > 0 && len(response.Results[0].Series) > 0 {
+		result.Data = map[string]interface{}{"rows": len(response.Results[0].Series[0].Values)}
+	}
+	return result
+}
+
+func testCeil(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Ceil", Description: "SELECT CEIL() ceiling function"}
+
+	val, err := queryOneValue(c, "SELECT ceil(value) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"ceil": val}
+	return result
+}
+
+func testFloor(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Floor", Description: "SELECT FLOOR() floor function"}
+
+	val, err := queryOneValue(c, "SELECT floor(value) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"floor": val}
+	return result
+}
+
+func testRound(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Round", Description: "SELECT ROUND() rounding function"}
+
+	val, err := queryOneValue(c, "SELECT round(value) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"round": val}
+	return result
+}
+
+func testSqrt(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Sqrt", Description: "SELECT SQRT() square root function"}
+
+	val, err := queryOneValue(c, "SELECT sqrt(value) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"sqrt": val}
+	return result
+}
+
+func testPow(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Pow", Description: "SELECT POW(field, exponent) power function"}
+
+	val, err := queryOneValue(c, "SELECT pow(value, 2) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"pow2": val}
+	return result
+}
+
+func testExp(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Exp", Description: "SELECT EXP() exponential function"}
+
+	val, err := queryOneValue(c, "SELECT exp(fraction) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"exp": val}
+	return result
+}
+
+func testLn(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Ln", Description: "SELECT LN() natural logarithm"}
+
+	val, err := queryOneValue(c, "SELECT ln(value) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"ln": val}
+	return result
+}
+
+func testLog2(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Log2", Description: "SELECT LOG2() base-2 logarithm"}
+
+	val, err := queryOneValue(c, "SELECT log2(value) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"log2": val}
+	return result
+}
+
+func testLog10(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Log10", Description: "SELECT LOG10() base-10 logarithm"}
+
+	val, err := queryOneValue(c, "SELECT log10(value) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"log10": val}
+	return result
+}
+
+func testLogBase(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "LogBase", Description: "SELECT LOG(field, base) custom base logarithm"}
+
+	val, err := queryOneValue(c, "SELECT log(value, 4) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"log_base4": val}
+	return result
+}
+
+func testSin(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Sin", Description: "SELECT SIN() sine function (radians)"}
+
+	val, err := queryOneValue(c, "SELECT sin(fraction) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"sin": val}
+	return result
+}
+
+func testCos(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Cos", Description: "SELECT COS() cosine function (radians)"}
+
+	val, err := queryOneValue(c, "SELECT cos(fraction) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"cos": val}
+	return result
+}
+
+func testTan(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Tan", Description: "SELECT TAN() tangent function (radians)"}
+
+	val, err := queryOneValue(c, "SELECT tan(fraction) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"tan": val}
+	return result
+}
+
+func testAsin(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Asin", Description: "SELECT ASIN() arcsine (input in [-1,1])"}
+
+	// fraction values are 0.01..0.25, safe for asin
+	val, err := queryOneValue(c, "SELECT asin(fraction) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"asin": val}
+	return result
+}
+
+func testAcos(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Acos", Description: "SELECT ACOS() arccosine (input in [-1,1])"}
+
+	val, err := queryOneValue(c, "SELECT acos(fraction) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"acos": val}
+	return result
+}
+
+func testAtan(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Atan", Description: "SELECT ATAN() arctangent"}
+
+	val, err := queryOneValue(c, "SELECT atan(fraction) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"atan": val}
+	return result
+}
+
+func testAtan2(c client.Client) TestResult {
+	start := time.Now()
+	result := TestResult{Name: "Atan2", Description: "SELECT ATAN2(y, x) two-argument arctangent"}
+
+	val, err := queryOneValue(c, "SELECT atan2(fraction, value) FROM math_test WHERE run='phase1' LIMIT 1")
+	result.Duration = time.Since(start).String()
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	result.Success = true
+	result.Data = map[string]interface{}{"atan2": val}
 	return result
 }
 
