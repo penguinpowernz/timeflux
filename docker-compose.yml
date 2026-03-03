@@ -21,14 +21,15 @@ services:
       - timeflux-network
 
   timeflux:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: alpine:latest
     container_name: timeflux-app
     ports:
       - "8086:8086"
     volumes:
+      - ./bin/timeflux:/app/timeflux:ro
       - ./config.yaml:/app/config.yaml:ro
+    working_dir: /app
+    entrypoint: ["/app/timeflux", "-config", "/app/config.yaml"]
     depends_on:
       timescaledb:
         condition: service_healthy

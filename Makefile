@@ -25,8 +25,8 @@ test:
 run: build
 	$(BIN_DIR)/$(BINARY_NAME)
 
-reup:
-	docker-compose up -d --build timeflux
+reup: build
+	docker-compose restart timeflux
 
 up:
 	docker-compose up -d
