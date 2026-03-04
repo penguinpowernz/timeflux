@@ -1,8 +1,10 @@
 package write
 
 import (
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -77,8 +79,20 @@ func (h *Handler) Handle(c *gin.Context) {
 	const maxBodySize = 32 * 1024 * 1024
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodySize)
 
-	// Read request body
-	body, err := c.GetRawData()
+	// Read request body, decompressing if needed
+	var bodyReader io.Reader = c.Request.Body
+	if c.GetHeader("Content-Encoding") == "gzip" {
+		gr, err := gzip.NewReader(c.Request.Body)
+		if err != nil {
+			log.Printf("Error creating gzip reader: %v", err)
+			c.String(http.StatusBadRequest, "Failed to decompress gzip body: %v", err)
+			return
+		}
+		defer gr.Close()
+		bodyReader = gr
+	}
+
+	body, err := io.ReadAll(bodyReader)
 	if err != nil {
 		log.Printf("Error reading request body: %v", err)
 		c.String(http.StatusRequestEntityTooLarge, "Request body too large (max 32MB)")
