@@ -565,6 +565,10 @@ Field types are inferred from InfluxDB line protocol:
 - Single instance only (no clustering)
 - Subset of InfluxQL features supported
 - Measurement-level permissions extracted at database level (not from query content)
+- **Retention policies not implemented** — `CREATE/ALTER/DROP/SHOW RETENTION POLICY` are not supported. All data is written to a single default table per measurement with no automatic expiry. See [RETENTION_POLICIES.md](RETENTION_POLICIES.md) for an investigation into how this could be implemented using TimescaleDB's native `add_retention_policy()`.
+- **Continuous queries not implemented** — `CREATE/DROP/SHOW CONTINUOUS QUERY` are not supported. There is no automatic periodic aggregation or downsampling. See [CONTINUOUS_QUERIES.md](CONTINUOUS_QUERIES.md) for an investigation into how this could be implemented using TimescaleDB continuous aggregates or pg_cron.
+- **`rp` write parameter ignored** — the `rp` query parameter on the `/write` endpoint is accepted but has no effect; all writes go to the default (unqualified) measurement table.
+- **Fully qualified measurement names not supported** — InfluxQL syntax `"retention_policy"."measurement"` in queries is not parsed or translated.
 
 ### Future Enhancements
 - JWT/Bearer token authentication
@@ -573,6 +577,8 @@ Field types are inferred from InfluxDB line protocol:
 - Replica awareness for distributed reads with writing to the master
 - Support entire InfluxDB function set
 - Store metrics in an "_internal" database like InfluxDB
+- Retention policy support via TimescaleDB `add_retention_policy()` (see [RETENTION_POLICIES.md](RETENTION_POLICIES.md))
+- Continuous query support via TimescaleDB continuous aggregates (see [CONTINUOUS_QUERIES.md](CONTINUOUS_QUERIES.md))
 
 ## Example: Using with Telegraf
 
